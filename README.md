@@ -18,6 +18,7 @@ Orin↔Nano.
 | `orin_systemd/` | Units systemd del Orin. |
 | `nano/jetauto_ws_src/` | Código ROS1 Melodic **original de fábrica** (Hiwonder), extraído del Nano — referencia del port. |
 | `nano/cfg`, `nano/sys` | Configs y reglas udev/systemd originales del Nano. |
+| `client_ws/src/` | Workspace **cliente** (corre en la **laptop**): `jetauto_teleop` (teleop del control → /cmd_vel) y `jetauto_rviz` (RViz + launches todo-en-uno `mapear_real`/`navegar_real`/`guardar_mapa` + `view`). Fuente de verdad; `port_bot_sim_ws` lo referencia como submódulo. |
 | `deploy_agv_orin.sh` | Script de despliegue al Orin. |
 
 ## NO versionado (ver `.gitignore`)

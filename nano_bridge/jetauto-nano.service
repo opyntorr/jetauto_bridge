@@ -1,0 +1,21 @@
+# Autoarranque del contenedor de hardware del JetAuto en la Nano.
+# Instalar (en la Nano host):
+#   sudo cp jetauto-nano.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable jetauto-nano.service
+# El contenedor 'jetauto_nano' debe existir (docker run ... una vez).
+[Unit]
+Description=JetAuto Nano hardware bringup (ROS2 Humble en Docker)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Espera a que enumeren I2C (bus 1) y el lidar (ttyUSB0) tras el boot
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do [ -e /dev/i2c-1 ] && [ -e /dev/ttyUSB0 ] && break; sleep 1; done; true'
+ExecStart=/usr/bin/docker start jetauto_nano
+ExecStop=/usr/bin/docker stop jetauto_nano
+
+[Install]
+WantedBy=multi-user.target

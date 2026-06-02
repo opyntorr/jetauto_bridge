@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="robot_name"  default="/"/>
+    <!-- @Ana, por favor, nunca muevas estas lineas, por fi, jijji. Atte Dany UwU -->
+    <!-- DO NOT DELETE THESE LINES. REQUIRED FOR OPENING THE RGB VISUALIZATION SCREEN -->
+    <arg name="start"   default="true"/>
+    <arg name="debug"   default="false"/>
+
+    <!-- Execute jetauto_controller launch file. REQUIRED FOR EXECUTING REMOTE KEYBOARD CONTROL -->
+    <include file="$(find jetauto_controller)/launch/jetauto_controller.launch"/>
+
+    <!-- Execute color_detect_node launch file. REQUIRED FOR INITIALIZING THE RGB CAMERA -->
+    <include file="$(find jetauto_example)/scripts/color_detect/color_detect_node.launch">
+        <arg name="use_depth_cam"   value="false"/>
+    </include>
+
+    <node name="test" pkg="hw_test_01" type="mechanum.py" output="screen" ns="$(arg robot_name)"/>
+
+    <!-- Starts the color_sorting_node. REQUIRED FOR OPENING THE RGB VISUALIZATION SCREEN -->
+    <node pkg="jetauto_example" type="color_sorting_node.py" name="color_sorting_node" output="screen">
+        <param name="start" value="$(arg start)"/>
+        <param name="debug" value="$(arg debug)"/>
+    </node>
+</launch>

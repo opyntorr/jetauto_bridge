@@ -1,0 +1,30 @@
+# Params de la capa de hardware en la Nano. IGUAL que el Orin pero i2c_bus=1
+# (en la Nano el bus del shield/HAT es /dev/i2c-1; en el Orin era el 7).
+jetauto_chassis:
+  ros__parameters:
+    i2c_bus: 1
+    motor_type: 3          # JGB37 encoder motor
+    wheelbase_a: 103.0     # mm
+    wheelbase_b: 97.0      # mm
+    wheel_diameter: 96.5   # mm
+    pulse_per_cycle: 4320.0
+    go_factor: 0.90
+    turn_factor: 0.93
+    linear_correction_factor: 1.0
+    angular_correction_factor: 1.0
+    control_rate: 50.0
+    cmd_vel_timeout: 0.5
+    # --- filtro de seguridad de motores (bajo nivel) ---
+    max_linear_speed: 0.5     # m/s  : tope de |vx|,|vy|
+    max_angular_speed: 0.5    # rad/s: tope de |wz| (cap conservador para SLAM)
+    max_motor_duty: 85.0      # tope por rueda (de 100); 0.5 m/s recto ~= 71
+    motor_slew_rate: 250.0    # duty/s: rampa (0->tope en ~0.34s; sin reversas instantaneas)
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    publish_tf: false      # el EKF (en el Orin) publica odom->base_footprint
+
+imu_node:
+  ros__parameters:
+    i2c_bus: 1
+    frame_id: imu_link
+    freq: 50.0

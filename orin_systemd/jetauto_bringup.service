@@ -1,0 +1,31 @@
+# Autoarranque de la movilidad del JetAuto en la Orin (equivalente al start_app_node.service de la Nano).
+# BORRADOR — NO habilitar hasta haber validado el bring-up con hardware real.
+#
+# Instalar (en la Orin):
+#   sudo cp jetauto_bringup.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jetauto_bringup.service
+#   journalctl -u jetauto_bringup -f      # ver logs
+# Deshabilitar:
+#   sudo systemctl disable --now jetauto_bringup.service
+#
+# Ajusta ROS_DOMAIN_ID si lo cambias. Espera a que el bus I2C y el USB estén listos.
+
+[Unit]
+Description=JetAuto mobility bringup (ROS2 Humble)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jetson
+# Da tiempo a que enumeren I2C (bus 7) y los USB (lidar/cámara) tras el boot.
+ExecStartPre=/bin/sleep 8
+Environment=ROS_DOMAIN_ID=0
+# Carga ROS + el workspace y lanza la base+lidar+TF.
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source /home/jetson/jetauto_ros2_ws/install/setup.bash && exec ros2 launch jetauto_bringup robot.launch.py'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,38 @@
+# ---- Backups e imágenes de disco (PESADO, NO versionar) ----
+nano_backup/
+*.img
+*.img.gz
+*.img.gz.sha256
+*.tgz
+*.tar
+*.tar.gz
+
+# ---- SDKs de terceros (tienen su propio repo git) ----
+OrbbecSDK_ROS2/
+OrbbecSDK_ROS2_legacy/
+
+# ---- Volcado del HOME del Nano (no es código del proyecto: .d de build, configs de
+#      usuario, basura). El código ROS1 útil está en nano/jetauto_ws_src. ----
+nano/home/
+
+# ---- Artefactos de build de colcon ----
+build/
+install/
+log/
+
+# ---- Artefactos de runtime (mapas, fotos, bags) ----
+artifacts/
+*.bag
+*.pgm
+*.pcd
+*.db3
+
+# ---- Python compilado ----
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- Editores / temporales ----
+.vscode/
+*.swp
+*~

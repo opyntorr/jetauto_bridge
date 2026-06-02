@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jetauto_navigation</name>
+  <version>0.1.0</version>
+  <description>Nav2-based autonomous navigation for the JetAuto (ROS2 Humble).
+    Port of the ROS1 jetauto_navigation (move_base + DWA/TEB + amcl + costmaps).</description>
+  <maintainer email="a00344869@tec.mx">opyntorr</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_common</exec_depend>
+  <exec_depend>jetauto_bringup</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

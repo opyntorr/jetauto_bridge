@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Real-robot (non-gazebo) JetAuto BASE description for ROS2 Humble.
+  No $(env ...) and no Gazebo plugins/sensors. lidar_type arg: A1 | A2 | G4 (default A1).
+  Frames: base_footprint -> base_link -> {wheels, imu_link, lidar_link -> lidar_frame}.
+-->
+<robot name="jetauto" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:arg name="lidar_type" default="A1"/>
+  <xacro:property name="lidar" value="$(arg lidar_type)"/>
+
+  <xacro:include filename="$(find jetauto_description)/urdf/materials.xacro"/>
+  <xacro:include filename="$(find jetauto_description)/urdf/inertial_matrix.xacro"/>
+  <xacro:include filename="$(find jetauto_description)/urdf/jetauto_car.urdf.xacro"/>
+  <xacro:include filename="$(find jetauto_description)/urdf/imu.urdf.xacro"/>
+  <xacro:include filename="$(find jetauto_description)/urdf/lidar.urdf.xacro"/>
+
+  <xacro:if value="${lidar in ['A1', 'A2']}">
+    <xacro:include filename="$(find jetauto_description)/urdf/lidar_a1.urdf.xacro"/>
+  </xacro:if>
+  <xacro:if value="${lidar == 'G4'}">
+    <xacro:include filename="$(find jetauto_description)/urdf/lidar_g4.urdf.xacro"/>
+  </xacro:if>
+</robot>

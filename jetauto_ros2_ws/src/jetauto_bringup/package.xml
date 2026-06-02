@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jetauto_bringup</name>
+  <version>0.1.0</version>
+  <description>Top-level launch files for the JetAuto mobility stack on ROS2 Humble.</description>
+  <maintainer email="a00344869@tec.mx">opyntorr</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>jetauto_controller</exec_depend>
+  <exec_depend>jetauto_description</exec_depend>
+  <exec_depend>rplidar_ros</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

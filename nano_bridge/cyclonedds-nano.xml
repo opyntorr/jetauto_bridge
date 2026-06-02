@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Bridge DDS de la Nano: fija CycloneDDS al ethernet (eth0 = 192.168.5.2) y
+     descubre por unicast al Orin (192.168.5.1). Sin multicast (enlace directo). -->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="eth0" priority="default" multicast="true"/>
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <!-- Subir el limite para alcanzar los indices altos del Orin (muchos nodos). -->
+      <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="192.168.5.1"/>
+        <Peer address="10.42.1.78"/>  <!-- laptop (AllowMulticast=false, unicast): sin este peer
+             el Nano NO descubre los publishers de la laptop (p.ej. /cmd_vel del teleop). -->
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

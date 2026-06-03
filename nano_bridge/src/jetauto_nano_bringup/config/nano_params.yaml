@@ -15,9 +15,9 @@ jetauto_chassis:
     control_rate: 50.0
     cmd_vel_timeout: 0.5
     # --- filtro de seguridad de motores (bajo nivel) ---
-    max_linear_speed: 0.5     # m/s  : tope de |vx|,|vy|
+    max_linear_speed: 0.25    # m/s  : tope de |vx|,|vy| (cap conservador para SLAM consistente)
     max_angular_speed: 0.5    # rad/s: tope de |wz| (cap conservador para SLAM)
-    max_motor_duty: 85.0      # tope por rueda (de 100); 0.5 m/s recto ~= 71
+    max_motor_duty: 85.0      # tope por rueda (de 100); 0.25 m/s recto ~= 36
     motor_slew_rate: 250.0    # duty/s: rampa (0->tope en ~0.34s; sin reversas instantaneas)
     odom_frame_id: odom
     base_frame_id: base_footprint

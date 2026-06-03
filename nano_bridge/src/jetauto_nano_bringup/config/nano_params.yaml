@@ -10,12 +10,16 @@ jetauto_chassis:
     pulse_per_cycle: 4320.0
     go_factor: 0.90
     turn_factor: 0.93
-    linear_correction_factor: 1.0
-    angular_correction_factor: 1.0
+    linear_correction_factor: 1.085   # calibrado en piso 2026-06-02 (real 1.07m / odom 0.986m)
+    angular_correction_factor: 1.0    # el giro lo da la IMU en el EKF (encoders mecanum poco fiables en giro); este factor de encoders NO se usa para el yaw
     control_rate: 50.0
     cmd_vel_timeout: 0.5
+    # --- odometria: 'encoder' = lazo cerrado (mide ruedas); 'cmd_vel' = lazo abierto (fallback) ---
+    odom_source: encoder
+    enc_wheel_channels: [2, 3, 0, 1]   # rueda logica -> indice read_encoders (caracterizado 2026-06-02)
+    enc_wheel_signs: [1, 1, 1, 1]
     # --- filtro de seguridad de motores (bajo nivel) ---
-    max_linear_speed: 0.25    # m/s  : tope de |vx|,|vy| (cap conservador para SLAM consistente)
+    max_linear_speed: 0.25    # m/s  : tope de |vx|,|vy| (cap conservador para SLAM)
     max_angular_speed: 0.5    # rad/s: tope de |wz| (cap conservador para SLAM)
     max_motor_duty: 85.0      # tope por rueda (de 100); 0.25 m/s recto ~= 36
     motor_slew_rate: 250.0    # duty/s: rampa (0->tope en ~0.34s; sin reversas instantaneas)

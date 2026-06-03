@@ -77,12 +77,19 @@ class ChassisNode(Node):
         self.declare_parameter('cmd_vel_timeout', 0.5)
         # --- low-level motor safety filter ---
         self.declare_parameter('max_linear_speed', 0.5)    # m/s  : tope de |vx|,|vy|
-        self.declare_parameter('max_angular_speed', 0.5)   # rad/s: tope de |wz| (cap conservador)
+        self.declare_parameter('max_angular_speed', 2.0)   # rad/s: tope de |wz|
         self.declare_parameter('max_motor_duty', 85.0)     # tope por rueda (de 100)
         self.declare_parameter('motor_slew_rate', 250.0)   # duty/s: rampa de aceleracion
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_footprint')
         self.declare_parameter('publish_tf', True)
+        # --- odometria: 'cmd_vel' (lazo abierto, integra el comando) | 'encoder' (lazo
+        #     cerrado, mide las ruedas por encoder + cinematica directa mecanum) ---
+        self.declare_parameter('odom_source', 'cmd_vel')
+        # mapeo descubierto por motor_characterization.py: rueda logica i -> indice en
+        # read_encoders(), y signo (+1/-1). Caracterizado 2026-06-02: [2,3,0,1], todos +1.
+        self.declare_parameter('enc_wheel_channels', [2, 3, 0, 1])
+        self.declare_parameter('enc_wheel_signs', [1, 1, 1, 1])
 
         gp = self.get_parameter
         i2c_bus = gp('i2c_bus').value
@@ -99,6 +106,13 @@ class ChassisNode(Node):
         self.odom_frame = gp('odom_frame_id').value
         self.base_frame = gp('base_frame_id').value
         self.publish_tf = gp('publish_tf').value
+        self.odom_source = gp('odom_source').value
+        self.enc_channels = list(gp('enc_wheel_channels').value)
+        self.enc_signs = list(gp('enc_wheel_signs').value)
+        self.wheel_circ_mm = math.pi * gp('wheel_diameter').value   # mm por revolucion de rueda
+        self.ppc = float(gp('pulse_per_cycle').value)               # pulsos de encoder por revolucion
+        self.ab_mm = gp('wheelbase_a').value + gp('wheelbase_b').value
+        self._enc_prev = None   # ultima lectura de encoders (para delta); None = primer ciclo
 
         try:
             self.board = MotorBoard(i2c_bus=i2c_bus, motor_type=gp('motor_type').value)
@@ -118,6 +132,12 @@ class ChassisNode(Node):
         self.last_written = None
         self.watchdog_active = False
 
+        if self.odom_source == 'encoder':
+            try:
+                self.board.clear_encoders()
+            except Exception as e:
+                self.get_logger().warn(f'No pude limpiar encoders al inicio: {e}')
+
         self.odom_pub = self.create_publisher(Odometry, 'odom', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
         self.create_subscription(Twist, 'cmd_vel', self.cmd_vel_cb, 10)
@@ -125,6 +145,7 @@ class ChassisNode(Node):
         self.create_timer(self.dt, self.update)
         self.get_logger().info(
             f'jetauto_chassis listo (I2C bus {i2c_bus}, {self.rate:.0f} Hz). '
+            f'odom={self.odom_source}. '
             f'Limites: lin<={self.max_lin} m/s, ang<={self.max_ang} rad/s, '
             f'duty<={self.max_duty:.0f}, rampa {self.slew_rate:.0f} duty/s.')
 
@@ -136,6 +157,38 @@ class ChassisNode(Node):
             self.cmd_vy = self.go_factor * _clamp(msg.linear.y, self.max_lin)
             self.cmd_wz = self.turn_factor * _clamp(msg.angular.z, self.max_ang)
             self.last_cmd_time = self.get_clock().now()
+
+    def _measured_velocity(self):
+        """Lee los encoders y devuelve (vx, vy, wz) MEDIDOS del cuerpo (m/s, m/s, rad/s) por
+        cinematica directa mecanum. Devuelve None si es el primer ciclo (sin delta) o si la
+        lectura I2C falla (en ese caso NO se integra ese ciclo; _enc_prev no avanza, asi que
+        el desplazamiento se recupera integro en la siguiente lectura buena)."""
+        try:
+            enc = self.board.read_encoders()
+        except OSError as e:
+            self.get_logger().warn(f'I2C encoder read fallo: {e}', throttle_duration_sec=2.0)
+            return None
+        if self._enc_prev is None:
+            self._enc_prev = enc
+            return None
+        d = [enc[i] - self._enc_prev[i] for i in range(4)]
+        self._enc_prev = enc
+        # velocidad de cada rueda logica (mm/s): canal y signo de la caracterizacion
+        w = [0.0, 0.0, 0.0, 0.0]
+        for i in range(4):
+            dp = d[self.enc_channels[i]] * self.enc_signs[i]
+            w[i] = (dp / self.ppc) * self.wheel_circ_mm / self.dt   # mm/s
+        # reconstruir velocidades internas mecanum (orden de salida en mecanum.duties_xyz:
+        # ruedas logicas [w0,w1,w2,w3] = [-v2, v3, v1, -v4])
+        v2 = -w[0]
+        v3 = w[1]
+        v1 = w[2]
+        v4 = -w[3]
+        # cinematica directa -> velocidad del cuerpo (verificada con vx+/vy+/wz+)
+        vx = (v1 + v2 + v3 + v4) / 4.0 / 1000.0          # m/s
+        vy = (v2 + v4 - v1 - v3) / 4.0 / 1000.0          # m/s
+        wz = ((v2 + v3 - v1 - v4) / 4.0) / self.ab_mm    # rad/s (mm/s / mm)
+        return vx, vy, wz
 
     def update(self):
         now = self.get_clock().now()
@@ -169,10 +222,20 @@ class ChassisNode(Node):
             except OSError as e:
                 self.get_logger().warn(f'I2C write fallo: {e}')
 
-        # dead-reckoning odometry from commanded body velocity (REP-103: x fwd, y left)
-        self.x += (math.cos(self.yaw) * vx - math.sin(self.yaw) * vy) * self.dt * self.lin_corr
-        self.y += (math.sin(self.yaw) * vx + math.cos(self.yaw) * vy) * self.dt * self.lin_corr
-        self.yaw += wz * self.dt * self.ang_corr
+        # --- ODOMETRIA ---
+        # 'encoder': velocidad MEDIDA de las ruedas (lazo cerrado). Si la lectura falla o es
+        #            el primer ciclo, no se integra (0,0,0) y la pose se conserva.
+        # 'cmd_vel': integra el comando (lazo abierto, comportamiento historico).
+        if self.odom_source == 'encoder':
+            meas = self._measured_velocity()
+            ox, oy, ow = meas if meas is not None else (0.0, 0.0, 0.0)
+        else:
+            ox, oy, ow = vx, vy, wz
+
+        # integracion de pose (REP-103: x fwd, y left), velocidad de cuerpo rotada por yaw
+        self.x += (math.cos(self.yaw) * ox - math.sin(self.yaw) * oy) * self.dt * self.lin_corr
+        self.y += (math.sin(self.yaw) * ox + math.cos(self.yaw) * oy) * self.dt * self.lin_corr
+        self.yaw += ow * self.dt * self.ang_corr
 
         stamp = now.to_msg()
         odom = Odometry()
@@ -183,9 +246,10 @@ class ChassisNode(Node):
         odom.pose.pose.position.y = self.y
         odom.pose.pose.orientation = yaw_to_quaternion(self.yaw)
         odom.pose.covariance = ODOM_POSE_COV
-        odom.twist.twist.linear.x = vx
-        odom.twist.twist.linear.y = vy
-        odom.twist.twist.angular.z = wz
+        # twist = velocidad MEDIDA calibrada (el EKF fusiona vx,vy de aqui + vyaw de la IMU)
+        odom.twist.twist.linear.x = ox * self.lin_corr
+        odom.twist.twist.linear.y = oy * self.lin_corr
+        odom.twist.twist.angular.z = ow * self.ang_corr
         odom.twist.covariance = ODOM_TWIST_COV
         self.odom_pub.publish(odom)
 

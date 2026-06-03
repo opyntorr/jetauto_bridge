@@ -1,7 +1,11 @@
-# robot_localization EKF — ROS2 port of jetauto_slam/config/robot_localization.yaml
-# Fuses odom_raw (dead-reckoning) + imu/data (madgwick) -> odom (+ odom->base_footprint TF).
-# process_noise_covariance / initial_estimate_covariance are omitted on purpose:
-# the ROS1 file used robot_localization's own defaults, so we inherit the same defaults here.
+# robot_localization EKF (ROS2).
+# Fusion: odom_raw aporta VELOCIDAD LINEAL (vx,vy) de los encoders (lazo cerrado, fiable);
+#         imu/data aporta VELOCIDAD ANGULAR (vyaw) del giroscopio.
+# Motivo (2026-06-02): en mecanum, la odometria de ruedas estima MAL el giro (los rodillos a
+# 45 deg deslizan de forma variable con la velocidad/bateria -> factor no constante, validado).
+# El giroscopio mide el giro real fielmente. Por eso el yaw viene de la IMU, no de los encoders.
+# Posicion: el EKF integra vx,vy (encoders) con el yaw (IMU) -> pose correcta sin heredar el
+# error de yaw de las ruedas. El drift absoluto lo corrige el SLAM (map->odom).
 ekf_filter_node:
   ros__parameters:
     frequency: 30.0
@@ -20,23 +24,27 @@ ekf_filter_node:
     world_frame: odom
 
     odom0: odom_raw
-    odom0_config: [true,  true,  true,
-                   false, false, true,
+    # SOLO velocidades lineales vx, vy (de encoders). NO x,y,yaw (la pose de odom_raw se
+    # integra con el yaw de ruedas, poco fiable; mejor que el EKF integre vx,vy con el yaw IMU).
+    odom0_config: [false, false, false,
                    false, false, false,
+                   true,  true,  false,
                    false, false, false,
                    false, false, false]
     odom0_queue_size: 1
-    odom0_differential: true
+    odom0_differential: false
     odom0_relative: false
     odom0_nodelay: false
 
     imu0: imu/data
+    # SOLO velocidad angular vyaw (giroscopio). NO el yaw absoluto (el MPU6050 no tiene
+    # magnetometro -> su yaw absoluto deriva; el EKF integra vyaw y el SLAM corrige el absoluto).
     imu0_config: [false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false,
                   false, false, true,
                   false, false, false]
-    imu0_differential: true
+    imu0_differential: false
     imu0_relative: false
     imu0_queue_size: 1
     imu0_nodelay: false

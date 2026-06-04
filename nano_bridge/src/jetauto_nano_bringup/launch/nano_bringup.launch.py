@@ -37,6 +37,10 @@ def generate_launch_description():
         Node(package='jetauto_controller', executable='imu_node', name='imu_node',
              output='screen', parameters=[params]),
 
+        # Voltaje de bateria (placa 0x34 reg 0) -> /battery_voltage + /battery_state
+        Node(package='jetauto_controller', executable='battery_node', name='battery_node',
+             output='screen', parameters=[params]),
+
         # LIDAR RPLIDAR A1 -> /scan (frame lidar_frame)
         Node(package='rplidar_ros', executable='rplidar_node', name='rplidar_node', output='screen',
              parameters=[{

@@ -5,7 +5,11 @@
   <joint
     name="lidar_frame_joint"
     type="fixed">
-    <origin xyz="0 0 0" rpy="0 0 ${M_PI}" />
+    <!-- MS200 (2026-06-04): rpy yaw = 0. Su 0deg crudo apunta al FRENTE del robot, asi que NO
+         necesita giro. (El RPLIDAR A1 tenia su 0deg al reves -> usaba rpy="0 0 ${M_PI}" = 180deg;
+         con el MS200 ese 180deg dejaba el scan volteado -> objeto al frente caia en 180deg/atras.)
+         Para volver al A1: restaurar rpy="0 0 ${M_PI}". -->
+    <origin xyz="0 0 0" rpy="0 0 0" />
     <parent link="lidar_link" />
     <child link="lidar_frame" />
   </joint>

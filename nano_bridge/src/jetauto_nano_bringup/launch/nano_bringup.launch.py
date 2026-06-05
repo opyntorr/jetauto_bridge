@@ -41,16 +41,22 @@ def generate_launch_description():
         Node(package='jetauto_controller', executable='battery_node', name='battery_node',
              output='screen', parameters=[params]),
 
-        # LIDAR RPLIDAR A1 -> /scan (frame lidar_frame)
-        Node(package='rplidar_ros', executable='rplidar_node', name='rplidar_node', output='screen',
+        # LIDAR MS200 (Oradar, ToF, 360deg, min 0.03 m) -> /scan (frame lidar_frame).
+        # Reemplaza al RPLIDAR A1. Conexion serie CH343 en /dev/ttyACM0 @ 230400.
+        # (El A1 sigue conectado en /dev/lidar pero su driver NO se lanza; backup .a1.bak.)
+        Node(package='oradar_lidar', executable='oradar_scan', name='MS200', output='screen',
              parameters=[{
-                 'channel_type': 'serial',
-                 'serial_port': serial_port,
-                 'serial_baudrate': 115200,
+                 'device_model': 'MS200',
                  'frame_id': 'lidar_frame',
-                 'inverted': False,
-                 'angle_compensate': True,
-                 'scan_mode': 'Standard',
+                 'scan_topic': 'scan',
+                 'port_name': '/dev/ttyACM0',
+                 'baudrate': 230400,
+                 'angle_min': 0.0,
+                 'angle_max': 360.0,
+                 'range_min': 0.03,
+                 'range_max': 12.0,
+                 'clockwise': False,
+                 'motor_speed': 15,
              }]),
 
         # Camara RGB Astra Pro Plus via OrbbecSDK/libuvc -> /cam_1/image

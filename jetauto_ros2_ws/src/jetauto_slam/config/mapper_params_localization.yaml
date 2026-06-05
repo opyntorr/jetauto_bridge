@@ -1,0 +1,72 @@
+slam_toolbox:
+  ros__parameters:
+    # --- Frames / topics (match the JetAuto bring-up) ---
+    use_sim_time: false
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+
+    # --- LOCALIZATION (2026-06-03) ---
+    # Modo localizacion: NO construye un mapa nuevo desde cero; CARGA el pose-graph previo
+    # (serializado: <map_file_name>.posegraph + .data) y se localiza/continua sobre el via
+    # scan matching contra el mapa completo. Asi la pose es estable desde el primer scan
+    # (no el "reconstruir desde cero" del modo mapping). El EKF sigue dando odom->base como
+    # prior de movimiento; slam_toolbox publica map->odom (la correccion).
+    #
+    # map_file_name lo SOBREESCRIBE el launch (localizacion_nav_bridge) derivandolo del
+    # arg map:=...yaml (mismo basename, sin extension). Este default es solo fallback.
+    mode: localization
+    map_file_name: /home/jetson/maps/mapa_frente208
+    # Pose de arranque en el mapa cargado. Si el robot no arranca aqui, corrige con
+    # "2D Pose Estimate" en RViz (-> /initialpose) o, en el pipeline final, con el aruco.
+    map_start_pose: [0.0, 0.0, 0.0]
+    # map_start_at_dock: true
+
+    # --- Map ---
+    resolution: 0.05
+    map_update_interval: 2.0
+    transform_publish_period: 0.02
+
+    # --- Lidar range (Orbbec MS200; spec 0.03-12 m) ---
+    # Caracterizado 2026-06-04 (10 h quieto, ver tools/characterization): sigma_range ~4.3 mm,
+    # drift termico despreciable. La escena no tuvo blancos >~5 m -> el "max confiable" solo esta
+    # confirmado hasta ~5 m; 8.0 = margen seguro (mas alla, los retornos lejanos con sigma alta
+    # solo meten ruido al scan-match). min bajado de 0.15 (era del A1) a 0.05: el MS200 ve a 3 cm.
+    # OJO: verificar en RViz que no aparezcan auto-retornos del chasis (lidar 9.6 cm adelantado);
+    # si los hay cerca, subir min a 0.10.
+    min_laser_range: 0.05
+    max_laser_range: 8.0
+
+    # --- Scan matching / graph (slam_toolbox defaults, tuned light) ---
+    debug_logging: false
+    throttle_scans: 1
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+    enable_interactive_mode: true
+
+    minimum_travel_distance: 0.2
+    minimum_travel_heading: 0.2
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true

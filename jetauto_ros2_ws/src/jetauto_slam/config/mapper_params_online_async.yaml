@@ -14,9 +14,14 @@ slam_toolbox:
     transform_publish_period: 0.02
     map_start_pose: [0.0, 0.0, 0.0]
 
-    # --- Lidar range (RPLIDAR A1 ~12 m; raise for A2/G4) ---
-    min_laser_range: 0.15
-    max_laser_range: 12.0
+    # --- Lidar range (Orbbec MS200; spec 0.03-12 m) ---
+    # Caracterizado 2026-06-04 (10 h quieto, ver tools/characterization): sigma_range ~4.3 mm.
+    # La escena no tuvo blancos >~5 m -> max confiable confirmado solo a ~5 m; 8.0 = margen seguro
+    # (mas alla, retornos lejanos con sigma alta meten ruido al scan-match). min 0.05: el MS200 ve
+    # a 3 cm (antes 0.15, era del A1). OJO: verificar en RViz que no haya auto-retornos del chasis
+    # (lidar 9.6 cm adelantado); si los hay cerca, subir min a 0.10.
+    min_laser_range: 0.05
+    max_laser_range: 8.0
 
     # --- Scan matching / graph (slam_toolbox defaults, tuned light) ---
     debug_logging: false
@@ -26,8 +31,10 @@ slam_toolbox:
     stack_size_to_use: 40000000
     enable_interactive_mode: true
 
-    minimum_travel_distance: 0.2
-    minimum_travel_heading: 0.2
+    # EVO ronda 1 (Grupo A, frecuencia de scan-match): bajados de 0.2 -> procesa scans 2x mas
+    # seguido = menos drift acumulado. Baseline en mapper_params_online_async.yaml.deadreckoning.bak.
+    minimum_travel_distance: 0.15   # baseline 0.2
+    minimum_travel_heading: 0.15    # baseline 0.2
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
     link_match_minimum_response_fine: 0.1

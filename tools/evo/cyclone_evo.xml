@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- cyclone_evo.xml — DDS del LOGGER en el ORIN (~/cyclone_evo.xml).
+     Una sola config que ve TODO:
+       - /optitrack/rigid_body de laptop2 (ASUS_38) via PEER unicast 192.168.0.152
+         (el multicast entre clientes WiFi de ASUS_38 esta bloqueado -> unicast).
+       - /tf y /odom de los nodos LOCALES del Orin (bridge) via loopback (peer 127.0.0.1).
+     Interfaz wlP1p1s0 = la del Orin en ASUS_38 (192.168.0.151). AllowMulticast=false. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <Interfaces><NetworkInterface name="wlP1p1s0" priority="default" multicast="true"/></Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="192.168.0.152"/>  <!-- laptop2: /optitrack/rigid_body -->
+        <Peer address="127.0.0.1"/>      <!-- nodos locales del Orin: /tf /odom -->
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

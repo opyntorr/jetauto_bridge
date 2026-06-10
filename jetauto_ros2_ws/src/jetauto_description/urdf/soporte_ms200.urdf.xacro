@@ -1,0 +1,122 @@
+<?xml version="1.0"?>
+<!--
+  ===========================================================================
+  Soporte impreso (Hiwonder "Legera") con ArUco 3D (ID 4, dict 4X4_50) +
+  LiDAR MS200 montado encima. Version REAL-ROBOT (sin Gazebo, solo links/joints/
+  visuales para robot_state_publisher / TF / RViz).
+  Portado 1:1 desde la geometria validada en el sim
+  (mi_proyecto_sim/urdf/jetauto/jetauto_soporte.urdf.xacro).
+  ===========================================================================
+  Cadena de frames:
+    base_link
+      -> support_link        (Legera, malla en mm -> scale 0.001)
+          -> aruco_link       (cara BLANCA) + aruco_black_link (cara NEGRA)
+          -> ms200_link       (cuerpo del MS200, malla CAD recortada)
+          -> lidar_frame      (origen del /scan; cuelga del support para quedar HORIZONTAL)
+
+  RESULTADO (verificado): base_link -> lidar_frame = [0.026, 0, 0.260], rpy [0,0,0].
+  (El MS200 va sobre el soporte; reemplaza la posicion vieja del A1 [0.096,0,0.128].)
+
+  Mallas (en MILIMETROS -> scale 0.001) copiadas a jetauto_description/meshes/.
+-->
+<robot name="soporte_ms200" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:property name="meshes" value="package://jetauto_description/meshes"/>
+  <xacro:property name="mm"     value="0.001 0.001 0.001"/>
+
+  <!-- ============ poses (identicas al sim validado) ============ -->
+  <xacro:property name="support_xyz" value="-0.075 0 0.195"/>
+  <xacro:property name="support_rpy" value="1.15192 0 -1.5708"/>   <!-- tilt 66deg X + yaw -90deg Z -->
+  <xacro:property name="aruco_xyz"   value="-0.075 0.0162 0.0867"/> <!-- rel. al centro del soporte -->
+  <xacro:property name="aruco_rpy"   value="-1.15192 0 0"/>
+  <xacro:property name="ms200_xyz"   value="0.0 0.1003 -0.0657"/>   <!-- rel. al centro del soporte -->
+  <xacro:property name="ms200_rpy"   value="0 1.15192 1.5708"/>     <!-- eje de giro vertical -->
+  <xacro:property name="lidar_frame_rpy" value="0 1.15192 1.5708"/> <!-- scan horizontal -->
+
+  <!-- ===================== support (Legera) ===================== -->
+  <link name="support_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.20"/>
+      <inertia ixx="1.2e-3" ixy="0" ixz="0" iyy="1.2e-3" iyz="0" izz="1.2e-3"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${meshes}/Legera_centered.STL" scale="${mm}"/></geometry>
+      <material name="legera_gray"><color rgba="0.25 0.25 0.27 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.150 0.185 0.173"/></geometry>
+    </collision>
+  </link>
+  <joint name="support_joint" type="fixed">
+    <origin xyz="${support_xyz}" rpy="${support_rpy}"/>
+    <parent link="base_link"/>
+    <child  link="support_link"/>
+  </joint>
+
+  <!-- ===================== ArUco 3D (ID 4) ===================== -->
+  <link name="aruco_link">
+    <inertial>
+      <origin xyz="0.075 0.075 0.002" rpy="0 0 0"/>
+      <mass value="0.03"/>
+      <inertia ixx="6e-5" ixy="0" ixz="0" iyy="6e-5" iyz="0" izz="1.1e-4"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${meshes}/aruco4_white.stl" scale="${mm}"/></geometry>
+      <material name="aruco_white3d"><color rgba="0.95 0.95 0.95 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="aruco_joint" type="fixed">
+    <origin xyz="${aruco_xyz}" rpy="${aruco_rpy}"/>
+    <parent link="support_link"/>
+    <child  link="aruco_link"/>
+  </joint>
+  <link name="aruco_black_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${meshes}/aruco4_black.stl" scale="${mm}"/></geometry>
+      <material name="aruco_black3d"><color rgba="0.02 0.02 0.02 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="aruco_black_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="aruco_link"/>
+    <child  link="aruco_black_link"/>
+  </joint>
+
+  <!-- ===================== cuerpo MS200 ===================== -->
+  <link name="ms200_link">
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="2e-5" ixy="0" ixz="0" iyy="2e-5" iyz="0" izz="2e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${meshes}/ms200_body.stl" scale="${mm}"/></geometry>
+      <material name="ms200_body_black"><color rgba="0.05 0.05 0.05 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.038 0.038 0.030"/></geometry>
+    </collision>
+  </link>
+  <joint name="ms200_joint" type="fixed">
+    <origin xyz="${ms200_xyz}" rpy="${ms200_rpy}"/>
+    <parent link="support_link"/>
+    <child  link="ms200_link"/>
+  </joint>
+
+  <!-- ===================== lidar_frame (origen del /scan) ===================== -->
+  <!-- Mismo nombre lidar_frame para no romper SLAM/AMCL/Nav. Cuelga del support_link
+       (no del cuerpo del MS200) para que el barrido quede HORIZONTAL. -->
+  <link name="lidar_frame"/>
+  <joint name="lidar_frame_joint" type="fixed">
+    <origin xyz="${ms200_xyz}" rpy="${lidar_frame_rpy}"/>
+    <parent link="support_link"/>
+    <child  link="lidar_frame"/>
+  </joint>
+
+</robot>

@@ -14,10 +14,19 @@
   <xacro:include filename="$(find jetauto_description)/urdf/imu.urdf.xacro"/>
   <xacro:include filename="$(find jetauto_description)/urdf/lidar.urdf.xacro"/>
 
+  <!-- LiDAR MS200 sobre el soporte Legera (2026-06-09). El lidar_frame ahora cuelga del
+       soporte (base_link->lidar_frame = [0.026,0,0.260]), NO de la posicion vieja del A1.
+       Se conserva lidar.urdf.xacro arriba (el puck del A1 sigue fisicamente en el robot,
+       sin usar). Para volver al A1 como lidar activo: quitar este include y descomentar
+       el lidar_a1 de abajo. -->
+  <xacro:include filename="$(find jetauto_description)/urdf/soporte_ms200.urdf.xacro"/>
+
+  <!-- LiDARs viejos (lidar_frame en la posicion baja del chasis). Desactivados:
   <xacro:if value="${lidar in ['A1', 'A2']}">
     <xacro:include filename="$(find jetauto_description)/urdf/lidar_a1.urdf.xacro"/>
   </xacro:if>
   <xacro:if value="${lidar == 'G4'}">
     <xacro:include filename="$(find jetauto_description)/urdf/lidar_g4.urdf.xacro"/>
   </xacro:if>
+  -->
 </robot>

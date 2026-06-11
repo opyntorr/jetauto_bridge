@@ -28,6 +28,7 @@ def generate_launch_description():
     pkg_sim  = get_package_share_directory('mi_proyecto_sim')
     pkg_nav  = get_package_share_directory('jetauto_navigation')
     nav2_params = os.path.join(pkg_nav, 'config', 'nav2_params.yaml')
+    twist_mux_cfg = os.path.join(pkg_sim, 'config', 'twist_mux.yaml')
     default_map  = os.path.expanduser('~/maps/mapa_real.yaml')
 
     map_yaml = LaunchConfiguration('map')
@@ -80,15 +81,26 @@ def generate_launch_description():
                      'clearance_weight': 10.0,   # mas penalizacion por cercania a paredes (antes 5.0)
                      'clearance_ref_m': 0.40}])  # penaliza hasta mas lejos (antes 0.35)
 
+    # control_diferencial ahora publica a /cmd_vel_nav (entrada del mux), NO directo a /cmd_vel.
     control_diferencial_node = Node(
         package='mi_proyecto_sim', executable='control_diferencial.py',
         name='control_diferencial', output='screen',
-        parameters=[{'use_sim_time': False}])
+        parameters=[{'use_sim_time': False}],
+        remappings=[('/cmd_vel', '/cmd_vel_nav')])
+
+    # twist_mux: prioriza teleop > nav y aplica el e-stop (lock /e_stop). Su salida
+    # cmd_vel_out -> /cmd_vel (lo que lee el chasis; el chasis NO cambia).
+    twist_mux_node = Node(
+        package='twist_mux', executable='twist_mux',
+        name='twist_mux', output='screen',
+        parameters=[twist_mux_cfg, {'use_sim_time': False}],
+        remappings=[('cmd_vel_out', '/cmd_vel')])
 
     delayed_nav_stack = TimerAction(period=6.0, actions=[
         lifecycle_manager,
         nav_goal_bridge,
         planificador_rrt_node,
+        twist_mux_node,
         control_diferencial_node,
     ])
 

@@ -1,0 +1,31 @@
+# twist_mux para el JetAuto real — mux de /cmd_vel por PRIORIDAD + E-STOP.
+#
+# El chasis (Nano) sigue leyendo /cmd_vel SIN CAMBIOS. Aqui la salida del mux
+# (cmd_vel_out) se remapea a /cmd_vel en el launch.
+#
+# Entradas (mayor prioridad gana):
+#   teleop (100) > nav (10)
+#   - nav    = cmd_vel_nav    : navegacion / control_diferencial (y lo que quieras enrutar aqui)
+#   - teleop = cmd_vel_teleop : override manual (joystick) — opcional
+#
+# Lock (paro de emergencia):
+#   e_stop (200) : std_msgs/Bool. Mientras sea true, BLOQUEA todas las entradas
+#                  (twist_mux deja de publicar) -> el watchdog del chasis frena el robot.
+#                  Enganchar:  ros2 topic pub -1 /e_stop std_msgs/msg/Bool "{data: true}"
+#                  Liberar:    ros2 topic pub -1 /e_stop std_msgs/msg/Bool "{data: false}"
+twist_mux:
+  ros__parameters:
+    topics:
+      nav:
+        topic: cmd_vel_nav
+        timeout: 0.5
+        priority: 10
+      teleop:
+        topic: cmd_vel_teleop
+        timeout: 0.5
+        priority: 100
+    locks:
+      e_stop:
+        topic: e_stop
+        timeout: 0.0
+        priority: 200

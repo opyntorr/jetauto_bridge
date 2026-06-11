@@ -76,7 +76,9 @@ def generate_launch_description():
     planificador_rrt_node = Node(
         package='mi_proyecto_sim', executable='planificador_rrt',
         name='planificador_rrt', output='screen',
-        parameters=[{'use_sim_time': False, 'robot_radius_m': 0.25}])
+        parameters=[{'use_sim_time': False, 'robot_radius_m': 0.25,
+                     'clearance_weight': 10.0,   # mas penalizacion por cercania a paredes (antes 5.0)
+                     'clearance_ref_m': 0.40}])  # penaliza hasta mas lejos (antes 0.35)
 
     control_diferencial_node = Node(
         package='mi_proyecto_sim', executable='control_diferencial.py',

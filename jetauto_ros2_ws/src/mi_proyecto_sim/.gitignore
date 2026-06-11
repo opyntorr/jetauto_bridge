@@ -7,3 +7,6 @@ resultado_*.png
 # Assets de simulacion Gazebo (no necesarios para el carro real)
 models/
 worlds/
+# Mapas generados por exploracion/SLAM (outputs en runtime)
+maps/mapa_*.pgm
+maps/mapa_*.yaml

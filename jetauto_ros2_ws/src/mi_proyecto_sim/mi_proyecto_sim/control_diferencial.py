@@ -71,7 +71,13 @@ class ControlDiferencial(Node):
             depth=1,
         )
         self.alignment_sub = self.create_subscription(Bool, '/alignment_ready', self._alignment_callback, qos_latch)
-        
+
+        # Gate de giro: cuando el explorador hace un escaneo en sitio (360), avisa por
+        # /explorador_spin=True y el control CEDE /cmd_vel (no publica) para no pelearse.
+        # Si nadie publica (p.ej. navegar_real), queda False -> control normal.
+        self._spin_active = False
+        self.spin_sub = self.create_subscription(Bool, '/explorador_spin', self._spin_callback, qos_latch)
+
         # LiDAR Evasion State
         self.repulsion_x = 0.0
         self.repulsion_y = 0.0
@@ -81,7 +87,7 @@ class ControlDiferencial(Node):
         self.umbral_frontal = 0.63   # antes 0.55  (cono frontal +-20 deg)
         self.umbral_lateral = 0.25   # pasillos ~0.25-0.30 m: si es mayor, las 2
                                      # paredes disparan a la vez y traba al robot
-        self.umbral_trasero = 0.30   # NUEVO: cono trasero 95-180 deg (debil)
+        self.umbral_trasero = 0.35   # cono trasero 95-180 deg (reacciona un poco antes)
         # Exponente de la repulsion: mas alto = escala MAS LENTO (lejos casi no
         # empuja, solo se dispara muy cerca del obstaculo). 2=cuadratico (antes),
         # 3=cubico (mas suave al rozar un borde).
@@ -91,7 +97,7 @@ class ControlDiferencial(Node):
         self.ang_lateral = math.radians(95.0)   # 20<=|a|<95 -> lateral ; |a|>=95 -> trasero
         # Peso del cono trasero: bajo a proposito para NO empujar al robot hacia
         # adelante dentro de las esquinas (permite salir en reversa).
-        self.peso_trasero = 0.35
+        self.peso_trasero = 0.60   # subido (antes 0.35): repele mejor por detras
         self.fuerza_izq = 0.0
         self.fuerza_der = 0.0
         
@@ -109,6 +115,9 @@ class ControlDiferencial(Node):
         if msg.data and not self._alignment_ready:
             self.get_logger().info('Alineacion mapa-SLAM confirmada. Habilitando control diferencial.')
         self._alignment_ready = bool(msg.data)
+
+    def _spin_callback(self, msg):
+        self._spin_active = bool(msg.data)
 
     def path_callback(self, msg):
         nueva = []
@@ -194,7 +203,7 @@ class ControlDiferencial(Node):
 
             if r < umbral:
                 obstaculo = True
-                fuerza = 10.0 * ((umbral - r) / umbral)**self.exp_repulsion
+                fuerza = 16.0 * ((umbral - r) / umbral)**self.exp_repulsion  # magnitud subida (antes 10.0)
                 if es_trasero:
                     # Cono trasero: repulsion debil, sin vortex
                     rep_tras_x += -fuerza * math.cos(angle) * self.peso_trasero
@@ -265,6 +274,10 @@ class ControlDiferencial(Node):
 
         if not self._alignment_ready:
             self.stop_robot()
+            return
+
+        # El explorador esta girando en sitio: cedemos /cmd_vel (no publicamos).
+        if self._spin_active:
             return
 
         now = self.get_clock().now()
@@ -346,7 +359,7 @@ class ControlDiferencial(Node):
             rep_mundo_x = (self.repulsion_x * math.cos(theta) - self.repulsion_y * math.sin(theta))
             rep_mundo_y = (self.repulsion_x * math.sin(theta) + self.repulsion_y * math.cos(theta))
             rep_mag = math.hypot(rep_mundo_x, rep_mundo_y)
-            max_rep = 0.45
+            max_rep = 0.60   # tope subido (antes 0.45) para dejar pasar mas fuerza
             if rep_mag > max_rep:
                 rep_mundo_x = (rep_mundo_x / rep_mag) * max_rep
                 rep_mundo_y = (rep_mundo_y / rep_mag) * max_rep

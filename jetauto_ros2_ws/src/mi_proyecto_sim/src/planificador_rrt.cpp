@@ -340,6 +340,7 @@ private:
   Mat map_inflated_;
   Mat map_relaxed_;
   Mat dist_field_;   // distancia (px) de cada celda a la pared mas cercana
+  double last_plan_sec_ = 0.0;   // throttle de replanificacion
   double map_resolution_ = 0.05;
   double map_origin_x_ = 0.0;
   double map_origin_y_ = 0.0;
@@ -371,6 +372,15 @@ private:
           "Esperando mapa en el tópico /map_dron...");
         return false;
     }
+
+    // Throttle: el control pide replan a ~20Hz cuando no tiene ruta. Sin esto, los
+    // A* se encolan y el nodo se congela. Limitamos a 1 plan cada min_replan_interval s.
+    double tnow = this->get_clock()->now().seconds();
+    double min_iv = this->get_parameter_or("min_replan_interval", 0.3);
+    if (last_plan_sec_ > 0.0 && (tnow - last_plan_sec_) < min_iv) {
+        return false;
+    }
+    last_plan_sec_ = tnow;
 
     geometry_msgs::msg::TransformStamped start_tf;
     geometry_msgs::msg::TransformStamped goal_tf;
@@ -433,27 +443,17 @@ private:
     double theta_goal = -y_goal;
     ros_yaw_goal_ = y_goal;  // Guardar yaw original ROS para publicar en el Path
 
-    // Bucle de intentos alternando: 3 NORMAL -> 3 RELAJADO -> 3 NORMAL -> 3 RELAJADO ...
-    // hasta encontrar ruta. Cap de seguridad para no bloquear el nodo indefinidamente.
-    const int max_ciclos = 10;
-    bool success = false;
-    for (int ciclo = 0; ciclo < max_ciclos && !success; ciclo++) {
-        bool usar_relajado = (ciclo % 2 == 1);
-        const Mat& mapa = usar_relajado ? map_relaxed_ : map_inflated_;
-        const char* etiqueta = usar_relajado ? "RELAJADO" : "NORMAL";
-        if (ciclo > 0) {
-            RCLCPP_WARN(this->get_logger(),
-                "Ciclo %d: fallaron los 3 intentos previos. Probando 3 veces en modo %s...",
-                ciclo + 1, etiqueta);
-        }
-        for (int i = 0; i < 3 && !success; i++) {
-            success = compute_rrt(start, theta_start, goal, theta_goal, mapa, usar_relajado);
-        }
+    // A* es DETERMINISTICO y COMPLETO: 1 intento por mapa basta (los reintentos
+    // del RRT viejo eran puro desperdicio). NORMAL (inflado); si no hay ruta, RELAJADO.
+    bool success = compute_rrt(start, theta_start, goal, theta_goal, map_inflated_, false);
+    if (!success) {
+        RCLCPP_WARN(this->get_logger(), "Sin ruta en NORMAL. Probando mapa RELAJADO...");
+        success = compute_rrt(start, theta_start, goal, theta_goal, map_relaxed_, true);
     }
 
     if (!success) {
         RCLCPP_ERROR(this->get_logger(),
-            "Agotados %d ciclos (NORMAL/RELAJADO). No se encontro ruta.", max_ciclos);
+            "No se encontro ruta (NORMAL ni RELAJADO).");
     }
 
     return success;
@@ -502,6 +502,10 @@ private:
     double clear_ref_m  = this->get_parameter_or("clearance_ref_m", 0.35);
     double clear_weight = this->get_parameter_or("clearance_weight", 5.0);
     double clear_ref_px = clear_ref_m / map_resolution_;
+    // A* ponderado: inflar la heuristica (>1) hace la busqueda mucho mas dirigida
+    // al goal -> expande MUCHAS menos celdas en espacio abierto (evita el congelamiento).
+    // Rutas casi optimas; 1.0 = A* exacto, 2.0 = muy greedy/rapido.
+    float h_weight = (float)this->get_parameter_or("heuristic_weight", 1.6);
 
     int s_id = cell_idx(start.x, start.y);
     int g_id = cell_idx(goal.x, goal.y);
@@ -543,7 +547,7 @@ private:
           g_cost[nid] = ng;
           came_from[nid] = cur;
           float h = (float)get_dist(Point(nx, ny), goal);
-          open.push({ng + h, nid});
+          open.push({ng + h_weight * h, nid});
         }
       }
     }
@@ -556,7 +560,10 @@ private:
       // Suavizado que CONSERVA holgura (no corta esquinas) + densificado
       double keep_clear_px = (clear_ref_m * 0.6) / map_resolution_;
       vector<Point> smoothed_inner = clearance_shortcut(working_map, dist_field_, inner_path, keep_clear_px);
-      double densify_dist = max(1.0, 0.05 / map_resolution_); // ~5cm
+      // Espaciado de waypoints (m). Default 0.05 (navegacion); en exploracion se
+      // sube via param para que el robot avance mas directo hacia las fronteras.
+      double waypoint_spacing_m = this->get_parameter_or("waypoint_spacing_m", 0.05);
+      double densify_dist = max(1.0, waypoint_spacing_m / map_resolution_);
       vector<Point> dense_inner = densify_path(smoothed_inner, densify_dist);
 
       vector<Point> final_path;

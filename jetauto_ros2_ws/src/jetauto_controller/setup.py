@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'chassis_node = jetauto_controller.chassis_node:main',
             'imu_node = jetauto_controller.imu_node:main',
+            'battery_node = jetauto_controller.battery_node:main',
         ],
     },
 )

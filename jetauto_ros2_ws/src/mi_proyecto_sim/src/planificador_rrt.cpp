@@ -41,6 +41,18 @@ bool check_collision(const Mat &map, Point p1, Point p2) {
   return false;
 }
 
+// Theta*: linea de vista "segura" entre p1 y p2: TODO el segmento libre Y con
+// holgura >= min_clear_px. Asi solo se endereza (any-angle) por zonas abiertas,
+// no pegado a las paredes.
+bool theta_los(const Mat &map, const Mat &dist_field, Point p1, Point p2, float min_clear_px) {
+  LineIterator it(map, p1, p2, 8);
+  for (int i = 0; i < it.count; i++, ++it) {
+    if (map.at<uchar>(it.pos()) < 50) return false;
+    if (dist_field.at<float>(it.pos()) < min_clear_px) return false;
+  }
+  return true;
+}
+
 // Busca el pixel libre más cercano en espiral
 Point get_nearest_free_point(const Mat& map, Point pt, int max_radius = 50) {
   if (pt.x >= 0 && pt.y >= 0 && pt.x < map.cols && pt.y < map.rows) {
@@ -506,6 +518,10 @@ private:
     // al goal -> expande MUCHAS menos celdas en espacio abierto (evita el congelamiento).
     // Rutas casi optimas; 1.0 = A* exacto, 2.0 = muy greedy/rapido.
     float h_weight = (float)this->get_parameter_or("heuristic_weight", 1.6);
+    // Theta* (any-angle): conecta al "abuelo" en linea recta si hay vista segura
+    // -> rutas rectas a cualquier angulo (sin escalones). use_theta_star=false = A* puro.
+    bool use_theta = this->get_parameter_or("use_theta_star", true);
+    float theta_keep_px = (float)((clear_ref_m * 0.6) / map_resolution_);
 
     int s_id = cell_idx(start.x, start.y);
     int g_id = cell_idx(goal.x, goal.y);
@@ -530,24 +546,45 @@ private:
       if (closed[cur]) continue;
       closed[cur] = 1;
       int cx = cur % W, cy = cur / W;
+      int par = came_from[cur];                 // "abuelo" para Theta*
       for (int k = 0; k < 8; k++) {
         int nx = cx + dx8[k], ny = cy + dy8[k];
         if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
         if (working_map.at<uchar>(ny, nx) < 50) continue;   // pared (mapa inflado)
         int nid = cell_idx(nx, ny);
         if (closed[nid]) continue;
-        // costo = distancia recorrida + penalizacion por estar cerca de pared
-        float move = (k < 4) ? 1.0f : SQRT2;
+        Point np(nx, ny);
+        // penalizacion por estar cerca de pared (centra la ruta)
         float dpx  = dist_field_.at<float>(ny, nx);
         float pen  = (dpx < (float)clear_ref_px)
                        ? (float)clear_weight * (float)((clear_ref_px - dpx) / clear_ref_px)
                        : 0.0f;
-        float ng = g_cost[cur] + move + pen;
-        if (ng < g_cost[nid]) {
-          g_cost[nid] = ng;
-          came_from[nid] = cur;
-          float h = (float)get_dist(Point(nx, ny), goal);
-          open.push({ng + h_weight * h, nid});
+
+        // --- Theta*: si el vecino VE al abuelo en recta segura, conectar directo ---
+        bool linked = false;
+        if (use_theta && par >= 0) {
+          Point pp(par % W, par / W);
+          if (theta_los(working_map, dist_field_, pp, np, theta_keep_px)) {
+            float ng2 = g_cost[par] + (float)get_dist(pp, np) + pen;
+            if (ng2 < g_cost[nid]) {
+              g_cost[nid] = ng2;
+              came_from[nid] = par;            // padre = abuelo (any-angle)
+              float h = (float)get_dist(np, goal);
+              open.push({ng2 + h_weight * h, nid});
+            }
+            linked = true;   // con linea de vista, path-2 domina -> no usar A* estandar
+          }
+        }
+        // --- A* estandar (cuando no hay linea de vista al abuelo) ---
+        if (!linked) {
+          float move = (k < 4) ? 1.0f : SQRT2;
+          float ng = g_cost[cur] + move + pen;
+          if (ng < g_cost[nid]) {
+            g_cost[nid] = ng;
+            came_from[nid] = cur;
+            float h = (float)get_dist(np, goal);
+            open.push({ng + h_weight * h, nid});
+          }
         }
       }
     }

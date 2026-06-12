@@ -1,0 +1,510 @@
+#!/usr/bin/env python3
+"""
+mision_explorar_aruco.py — Mision combinada del carro:
+
+  1. EXPLORANDO: explora por fronteras (mapea con SLAM). En cada frame de camara
+     busca el ArUco objetivo (id 5); al verlo, MARCA su posicion en el mapa como
+     checkpoint (NO se detiene). Guarda la mejor lectura (la mas cercana).
+  2. (Mapeo listo = no quedan fronteras) -> VOLVIENDO: manda una meta ~0.5 m del
+     checkpoint y navega de regreso con el planner.
+  3. APROX_FINAL: al llegar y volver a ver el ArUco, toma /cmd_vel y se centra +
+     acerca a stop_distance (40 cm) exactos.
+  4. LLEGUE: se detiene y guarda el mapa.
+
+Si termina el mapeo sin haber visto el ArUco -> guarda el mapa y avisa.
+Combina explorador_frontera + buscar_aruco. Camara /cam_1/image, DICT_4X4_50.
+"""
+import math
+import os
+import time
+import numpy as np
+import cv2
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import qos_profile_sensor_data
+from nav_msgs.msg import OccupancyGrid
+from geometry_msgs.msg import PoseStamped, Twist
+from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import Bool
+from visualization_msgs.msg import Marker, MarkerArray
+from tf2_ros import Buffer, TransformListener
+from cv_bridge import CvBridge
+from scipy import ndimage
+
+try:
+    from ament_index_python.packages import get_package_share_directory
+except Exception:
+    get_package_share_directory = None
+
+
+def _default_maps_dir():
+    try:
+        share = get_package_share_directory('mi_proyecto_sim')
+        ws = os.path.abspath(os.path.join(share, '..', '..', '..', '..'))
+        return os.path.join(ws, 'src', 'mi_proyecto_sim', 'maps')
+    except Exception:
+        return os.getcwd()
+
+
+def _build_detector():
+    try:
+        d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        p = cv2.aruco.DetectorParameters()
+        return ('new', cv2.aruco.ArucoDetector(d, p), d, p)
+    except Exception:
+        d = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+        p = cv2.aruco.DetectorParameters_create()
+        return ('old', None, d, p)
+
+
+def _yaw(q):
+    return math.atan2(2.0*(q.w*q.z+q.x*q.y), 1.0-2.0*(q.y*q.y+q.z*q.z))
+
+
+class MisionExplorarAruco(Node):
+    def __init__(self):
+        super().__init__('mision_explorar_aruco')
+        gp = lambda n, v: self.declare_parameter(n, v).value
+
+        # ---- Exploracion ----
+        self.map_topic   = gp('map_topic', '/map')
+        self.goal_topic  = gp('goal_topic', '/goal_pose')
+        self.map_frame   = gp('map_frame', 'map')
+        self.robot_frame = gp('robot_frame', 'base_footprint')
+        self.min_frontier_cells = gp('min_frontier_cells', 12)
+        self.reach_dist     = gp('reach_dist', 0.65)
+        self.min_goal_dist  = gp('min_goal_dist', 0.75)
+        self.goal_timeout   = gp('goal_timeout', 35.0)
+        self.blacklist_radius = gp('blacklist_radius', 0.40)
+        self.tick_period    = gp('tick_period', 2.0)
+        self.done_retries   = gp('done_retries', 3)
+        self.dist_weight    = gp('dist_weight', 2.5)
+        self.initial_spin   = gp('initial_spin', True)
+        self.spin_on_arrival = gp('spin_on_arrival', True)
+        self.spin_seconds   = gp('spin_seconds', 13.0)
+        self.w_spin         = gp('w_spin', 0.5)
+        self.explore_timeout = gp('explore_timeout', 90.0)    # s: safeguard de terminacion del mapeo
+        self.mission_timeout = gp('mission_timeout', 240.0)   # s: tope GLOBAL de seguridad -> detener todo
+        self.auto_save  = gp('auto_save', True)
+        self.output_dir = gp('output_dir', _default_maps_dir())
+        self.map_name   = gp('map_name', '')
+        self.occ_th     = gp('occupied_thresh', 0.65)
+        self.free_th    = gp('free_thresh', 0.196)
+
+        # ---- ArUco / regreso ----
+        # Un cubo de ArUco trae 6 caras (ids 0-5): aceptamos CUALQUIERA = el cubo.
+        self.target_ids    = [int(x) for x in gp('target_ids', [0, 1, 2, 3, 4, 5])]
+        self.seen_id       = None
+        self.stop_distance = float(gp('stop_distance', 0.40))
+        self.marker_size   = float(gp('marker_size', 0.12))
+        self.cam_topic     = gp('camera_topic', '/cam_1/image')
+        self.info_topic    = gp('camera_info_topic', '/cam_1/camera_info')
+        self.return_offset = float(gp('return_offset', 0.55))  # m del checkpoint a la meta de regreso
+        self.return_reach  = float(gp('return_reach', 0.45))   # m para considerar "llegue al checkpoint"
+        self.k_ang   = float(gp('k_ang', 1.3))
+        # Signo del giro de centrado. Si gira AL REVES del cubo (imagen espejeada o
+        # convencion de giro del chasis), invertir: +1.0 o -1.0.
+        self.steer_sign = float(gp('steer_sign', 1.0))
+        self.k_lin   = float(gp('k_lin', 0.5))
+        self.v_max   = float(gp('v_max', 0.15))
+        self.w_max   = float(gp('w_max', 0.6))
+        self.app_dist_tol   = float(gp('dist_tol', 0.03))
+        self.app_center_tol = float(gp('center_tol', 0.06))
+        self.aruco_lost_timeout = float(gp('aruco_lost_timeout', 1.0))
+        self.confirm_frames = int(gp('confirm_frames', 3))
+
+        # ---- estado ----
+        self.phase = 'EXPLORANDO'   # EXPLORANDO -> VOLVIENDO -> APROX_FINAL -> LLEGUE
+        self.t0 = time.time()
+        self.map_msg = None
+        self.active_goal = None
+        self.goal_start_t = None
+        self.blacklist = []
+        self.empty_rounds = 0
+        self.exp_started = False
+        self.spinning = False
+        self.spin_end = 0.0
+        # checkpoint del aruco (mejor lectura)
+        self.checkpoint = None       # (mx, my) en map
+        self.seen_from = None        # (rx, ry) del robot al verlo
+        self.checkpoint_best_z = 1e9
+        self.return_goal = None
+        self.return_sent_t = 0.0
+        self.search_at_checkpoint = False
+        # deteccion aruco (para aproximacion final)
+        self.K = np.array([[539.13, 0, 320.46], [0, 539.13, 240.02], [0, 0, 1]], dtype=np.float64)
+        self.D = np.zeros((5,), dtype=np.float64)
+        self.aruco_u = None
+        self.aruco_dist = None
+        self.aruco_last_t = None
+        self.aruco_count = 0
+        self.bridge = CvBridge()
+        self.api, self.detector, self.adict, self.aparams = _build_detector()
+
+        latch = QoSProfile(durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                           reliability=ReliabilityPolicy.RELIABLE,
+                           history=HistoryPolicy.KEEP_LAST, depth=1)
+        self.create_subscription(OccupancyGrid, self.map_topic, self._map_cb, latch)
+        self.create_subscription(CameraInfo, self.info_topic, self._info_cb, 10)
+        self.create_subscription(Image, self.cam_topic, self._img_cb, qos_profile_sensor_data)
+        self.goal_pub = self.create_publisher(PoseStamped, self.goal_topic, 10)
+        self.cmd_pub  = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.spin_pub = self.create_publisher(Bool, '/explorador_spin', latch)
+        self.spin_pub.publish(Bool(data=False))
+        self.mapdron_pub = self.create_publisher(OccupancyGrid, '/map_dron', latch)
+        self.marker_pub = self.create_publisher(MarkerArray, '/mision_markers', latch)
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.timer = self.create_timer(self.tick_period, self._mission_tick)
+        self.fast = self.create_timer(0.066, self._fast_tick)
+
+        self.get_logger().info(
+            f'Mision lista: explora+mapea, marca el cubo (ArUco {self.target_ids}), al terminar el '
+            f'mapeo vuelve y se acerca a {self.stop_distance:.2f} m.')
+
+    # ================= ArUco =================
+    def _info_cb(self, msg):
+        if len(msg.k) >= 9 and msg.k[0] > 0.0:
+            self.K = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+            if len(msg.d) >= 4:
+                self.D = np.array(msg.d, dtype=np.float64)
+
+    def _img_cb(self, msg):
+        if self.phase == 'LLEGUE':
+            return
+        try:
+            img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+        except Exception:
+            return
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        if self.api == 'new':
+            corners, ids, _ = self.detector.detectMarkers(gray)
+        else:
+            corners, ids, _ = cv2.aruco.detectMarkers(gray, self.adict, parameters=self.aparams)
+        found = False
+        if ids is not None:
+            ids = ids.flatten().tolist()
+            # cualquier cara del cubo (0-5); si ve varias, la mas cercana al centro
+            matches = [t for t in self.target_ids if t in ids]
+            if matches:
+                tid = matches[0]
+                self.seen_id = tid
+                i = ids.index(tid)
+                c = corners[i].reshape(4, 2)
+                self.aruco_u = float(c[:, 0].mean())
+                try:
+                    _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
+                        [corners[i]], self.marker_size, self.K, self.D)
+                    self.aruco_dist = float(tvec[0][0][2])
+                except Exception:
+                    side = np.linalg.norm(c[0] - c[1])
+                    self.aruco_dist = (self.K[0, 0] * self.marker_size) / max(side, 1.0)
+                self.aruco_last_t = self.get_clock().now()
+                found = True
+        self.aruco_count = min(self.confirm_frames, self.aruco_count + 1) if found else 0
+
+        # Marcar checkpoint solo durante exploracion (con deteccion confirmada)
+        if found and self.aruco_count >= self.confirm_frames and self.phase == 'EXPLORANDO':
+            self._mark_checkpoint()
+
+    def _mark_checkpoint(self):
+        pose = self._robot_pose()
+        if pose is None:
+            return
+        rx, ry, rth = pose
+        z = self.aruco_dist
+        if z is None or z <= 0.05 or z > 6.0:
+            return
+        # lateral del marcador (m) desde el pixel: x_cam ~= z*(u-cx)/fx
+        x_cam = z * (self.aruco_u - self.K[0, 2]) / self.K[0, 0]
+        # a frame robot: adelante=z, izquierda=-x_cam ; a map con la pose del robot
+        fxr, fyr = z, -x_cam
+        mx = rx + fxr*math.cos(rth) - fyr*math.sin(rth)
+        my = ry + fxr*math.sin(rth) + fyr*math.cos(rth)
+        if z < self.checkpoint_best_z:   # quedarse con la lectura mas cercana (mas precisa)
+            self.checkpoint_best_z = z
+            self.checkpoint = (mx, my)
+            self.seen_from = (rx, ry)
+            self.get_logger().info(
+                f'Cubo (cara {self.seen_id}) MARCADO en mapa ({mx:+.2f},{my:+.2f}) [a {z:.2f} m]. '
+                f'Sigo mapeando.')
+            self._publish_markers()
+
+    def _aruco_visible(self):
+        if self.aruco_last_t is None or self.aruco_count < self.confirm_frames:
+            return False
+        return (self.get_clock().now() - self.aruco_last_t).nanoseconds/1e9 < self.aruco_lost_timeout
+
+    # ================= mision (2 Hz) =================
+    def _mission_tick(self):
+        if self.phase in ('APROX_FINAL', 'LLEGUE'):
+            return
+        if self.spinning:
+            return
+
+        if self.phase == 'VOLVIENDO':
+            self._tick_volviendo()
+            return
+
+        # ---- EXPLORANDO ----
+        if self.map_msg is None:
+            return
+        if not self.exp_started:
+            self.exp_started = True
+            if self.initial_spin:
+                self._start_spin('inicial'); return
+
+        rxy = self._robot_xy()
+        if rxy is None:
+            self.get_logger().info('Esperando TF del robot...', throttle_duration_sec=5.0)
+            return
+
+        if self.active_goal is not None:
+            d = math.hypot(self.active_goal[0]-rxy[0], self.active_goal[1]-rxy[1])
+            done = False
+            if d < self.reach_dist:
+                done = True
+            elif (time.time()-self.goal_start_t) > self.goal_timeout:
+                self.blacklist.append(self.active_goal); done = True
+            if not done:
+                return
+            self.active_goal = None
+            if self.spin_on_arrival:
+                self._start_spin('llegada'); return
+
+        target, n = self._pick_frontier(rxy)
+        timed_out = (time.time() - self.t0) > self.explore_timeout
+        if target is None:
+            self.empty_rounds += 1
+        else:
+            self.empty_rounds = 0
+
+        # Condicion de TERMINACION del mapeo: sin fronteras N rondas (o timeout)
+        if (target is None and self.empty_rounds >= self.done_retries) or timed_out:
+            self._on_mapping_done(timed_out)
+            return
+
+        if target is not None:
+            self.active_goal = target
+            self.goal_start_t = time.time()
+            self._publish_goal(target)
+            self.get_logger().info(f'Frontera -> ({target[0]:+.2f},{target[1]:+.2f}) [{n}]')
+
+    def _on_mapping_done(self, timed_out):
+        why = 'timeout' if timed_out else 'sin fronteras'
+        if self.checkpoint is None:
+            self.get_logger().warn(f'Mapeo COMPLETO ({why}) pero NO se vio el cubo de ArUco. Guardo y termino.')
+            self._finish(found=False)
+            return
+        # Meta de regreso = DONDE el robot vio mejor el cubo (su propia pose, confiable).
+        # Asi no dependemos de la posicion calculada del cubo (que puede salir mal por
+        # tamaño de marcador/inclinacion de camara). Ahi el cubo vuelve a estar a la vista.
+        self.return_goal = self.seen_from if self.seen_from else self.checkpoint
+        gx, gy = self.return_goal
+        self.phase = 'VOLVIENDO'
+        self.get_logger().info(
+            f'Mapeo COMPLETO ({why}). VOLVIENDO a donde vi el cubo: ({gx:+.2f},{gy:+.2f}).')
+        self._publish_goal(self.return_goal)
+        self.return_sent_t = time.time()
+        self._publish_markers()
+
+    def _tick_volviendo(self):
+        rxy = self._robot_xy()
+        if rxy is None:
+            return
+        # re-mandar la meta cada 4 s (mantiene viva la replanificacion)
+        if time.time() - self.return_sent_t > 4.0:
+            self._publish_goal(self.return_goal)
+            self.return_sent_t = time.time()
+        d = math.hypot(self.return_goal[0]-rxy[0], self.return_goal[1]-rxy[1])
+        if d < self.return_reach:
+            if self._aruco_visible():
+                self.get_logger().info('Llegue al checkpoint y veo el ArUco -> aproximacion final.')
+                self.phase = 'APROX_FINAL'
+                self.spin_pub.publish(Bool(data=True))   # control cede /cmd_vel
+            elif not self.search_at_checkpoint:
+                self.get_logger().info('En el checkpoint pero no veo el ArUco -> giro 360 para buscarlo.')
+                self.search_at_checkpoint = True
+                self._start_spin('buscar-en-checkpoint')
+
+    # ================= fast (15 Hz): giros + aproximacion final =================
+    def _fast_tick(self):
+        # Tope GLOBAL de seguridad: pase lo que pase, detener y guardar al expirar.
+        if self.phase != 'LLEGUE' and (time.time() - self.t0) > self.mission_timeout:
+            self.get_logger().warn('TIMEOUT GLOBAL de mision -> deteniendo y guardando.')
+            self._finish(found=(self.phase == 'APROX_FINAL'))
+            return
+        if self.spinning:
+            if time.time() < self.spin_end:
+                t = Twist(); t.angular.z = float(self.w_spin); self.cmd_pub.publish(t)
+            else:
+                self.cmd_pub.publish(Twist())
+                self.spinning = False
+                self.spin_pub.publish(Bool(data=False))
+                # si giramos buscando en el checkpoint y ya lo vemos, aproximacion final
+                if self.search_at_checkpoint and self.phase == 'VOLVIENDO' and self._aruco_visible():
+                    self.phase = 'APROX_FINAL'
+                    self.spin_pub.publish(Bool(data=True))
+            return
+
+        if self.phase != 'APROX_FINAL':
+            return
+
+        if not self._aruco_visible():
+            t = Twist(); t.angular.z = 0.4; self.cmd_pub.publish(t)   # re-buscar
+            return
+        ang_err = (self.aruco_u - self.K[0, 2]) / max(self.K[0, 2], 1.0)
+        dist_err = self.aruco_dist - self.stop_distance
+        if abs(dist_err) < self.app_dist_tol and abs(ang_err) < self.app_center_tol:
+            self._finish(found=True)
+            return
+        w = max(-self.w_max, min(self.w_max, self.steer_sign * self.k_ang * ang_err))
+        v = max(-self.v_max, min(self.v_max, self.k_lin * dist_err))
+        if abs(ang_err) > 0.20:
+            v *= 0.25
+        cmd = Twist(); cmd.linear.x = float(v); cmd.angular.z = float(w)
+        self.cmd_pub.publish(cmd)
+        self.get_logger().info(
+            f'Aprox final: dist={self.aruco_dist:.2f}m centro={ang_err:+.2f}',
+            throttle_duration_sec=1.0)
+
+    def _finish(self, found):
+        if self.phase == 'LLEGUE':
+            return
+        self.phase = 'LLEGUE'
+        self.cmd_pub.publish(Twist())
+        self.spin_pub.publish(Bool(data=False))
+        if found:
+            self.get_logger().info(
+                f'===== MISION COMPLETA: cubo (cara {self.seen_id}) a {self.aruco_dist:.2f} m. =====')
+        if self.auto_save and self.map_msg is not None:
+            self._save_map(self.map_msg)
+
+    # ================= helpers =================
+    def _map_cb(self, msg):
+        self.map_msg = msg
+        out = msg
+        out.header.frame_id = 'map_dron_origin'
+        self.mapdron_pub.publish(out)
+
+    def _robot_xy(self):
+        p = self._robot_pose()
+        return None if p is None else (p[0], p[1])
+
+    def _robot_pose(self):
+        try:
+            t = self.tf_buffer.lookup_transform(self.map_frame, self.robot_frame, rclpy.time.Time())
+            return (t.transform.translation.x, t.transform.translation.y,
+                    _yaw(t.transform.rotation))
+        except Exception:
+            return None
+
+    def _start_spin(self, motivo):
+        self.spinning = True
+        self.spin_end = time.time() + self.spin_seconds
+        self.spin_pub.publish(Bool(data=True))
+        self.get_logger().info(f'Escaneo 360 ({motivo})...')
+
+    def _pick_frontier(self, rxy):
+        m = self.map_msg
+        w, h, res = m.info.width, m.info.height, m.info.resolution
+        ox, oy = m.info.origin.position.x, m.info.origin.position.y
+        data = np.asarray(m.data, dtype=np.int16).reshape((h, w))
+        free = (data >= 0) & (data <= int(self.free_th*100))
+        unknown = (data < 0)
+        frontier = free & ndimage.binary_dilation(unknown, iterations=1)
+        if not frontier.any():
+            return None, 0
+        labels, n = ndimage.label(frontier)
+        best, best_score, valid = None, -1e18, 0
+        for i in range(1, n+1):
+            ys, xs = np.where(labels == i)
+            if len(xs) < self.min_frontier_cells:
+                continue
+            wx = ox + (xs.mean()+0.5)*res
+            wy = oy + (ys.mean()+0.5)*res
+            dist = math.hypot(wx-rxy[0], wy-rxy[1])
+            if dist < self.min_goal_dist:
+                continue
+            if any(math.hypot(wx-bx, wy-by) < self.blacklist_radius for bx, by in self.blacklist):
+                continue
+            valid += 1
+            score = len(xs) - self.dist_weight*(dist/res)
+            if score > best_score:
+                best_score, best = score, (wx, wy)
+        return best, valid
+
+    def _publish_goal(self, xy):
+        g = PoseStamped()
+        g.header.frame_id = self.map_frame
+        g.header.stamp = self.get_clock().now().to_msg()
+        g.pose.position.x = float(xy[0]); g.pose.position.y = float(xy[1])
+        g.pose.orientation.w = 1.0
+        self.goal_pub.publish(g)
+
+    def _publish_markers(self):
+        """Marcadores en RViz (/mision_markers): checkpoint del cubo, donde lo vio,
+        y la meta de regreso. Para VER si el calculo de la posicion del cubo es correcto."""
+        arr = MarkerArray()
+        def mk(mid, xy, rgb, scale, kind=Marker.SPHERE):
+            m = Marker()
+            m.header.frame_id = self.map_frame
+            m.header.stamp = self.get_clock().now().to_msg()
+            m.ns = 'mision'; m.id = mid; m.type = kind; m.action = Marker.ADD
+            m.pose.position.x = float(xy[0]); m.pose.position.y = float(xy[1])
+            m.pose.position.z = 0.1; m.pose.orientation.w = 1.0
+            m.scale.x = m.scale.y = m.scale.z = scale
+            m.color.r, m.color.g, m.color.b, m.color.a = rgb[0], rgb[1], rgb[2], 0.9
+            return m
+        if self.checkpoint:
+            arr.markers.append(mk(0, self.checkpoint, (1.0, 0.1, 0.1), 0.18, Marker.CUBE))  # cubo calc: ROJO
+        if self.seen_from:
+            arr.markers.append(mk(1, self.seen_from, (0.1, 1.0, 0.1), 0.14))                # lo vio aqui: VERDE
+        if self.return_goal:
+            arr.markers.append(mk(2, self.return_goal, (0.1, 0.4, 1.0), 0.14))              # meta regreso: AZUL
+        self.marker_pub.publish(arr)
+
+    def _save_map(self, msg):
+        w, h, res = msg.info.width, msg.info.height, msg.info.resolution
+        ox, oy = msg.info.origin.position.x, msg.info.origin.position.y
+        oq = msg.info.origin.orientation
+        yaw = math.atan2(2.0*(oq.w*oq.z+oq.x*oq.y), 1.0-2.0*(oq.y*oq.y+oq.z*oq.z))
+        data = np.asarray(msg.data, dtype=np.int16).reshape((h, w))
+        img = np.full((h, w), 205, dtype=np.uint8)
+        img[(data >= 0) & (data <= int(self.free_th*100))] = 254
+        img[data >= int(self.occ_th*100)] = 0
+        img = np.flipud(img)
+        os.makedirs(self.output_dir, exist_ok=True)
+        name = self.map_name or ('mapa_' + time.strftime('%Y%m%d_%H%M%S'))
+        pgm = os.path.join(self.output_dir, name+'.pgm')
+        ym  = os.path.join(self.output_dir, name+'.yaml')
+        with open(pgm, 'wb') as f:
+            f.write(f'P5\n{w} {h}\n255\n'.encode('ascii')); f.write(img.tobytes())
+        import yaml
+        with open(ym, 'w') as f:
+            yaml.safe_dump({'image': name+'.pgm', 'mode': 'trinary', 'resolution': float(res),
+                            'origin': [float(ox), float(oy), float(yaw)], 'negate': 0,
+                            'occupied_thresh': float(self.occ_th), 'free_thresh': float(self.free_th)},
+                           f, default_flow_style=None, sort_keys=False)
+        self.get_logger().info(f'MAPA GUARDADO: {pgm}')
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MisionExplorarAruco()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.cmd_pub.publish(Twist())
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

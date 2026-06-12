@@ -44,6 +44,7 @@ install(PROGRAMS
   mi_proyecto_sim/guardar_mapa_slam.py
   mi_proyecto_sim/explorador_frontera.py
   mi_proyecto_sim/buscar_aruco.py
+  mi_proyecto_sim/mision_explorar_aruco.py
   mi_proyecto_sim/mision_dron.py
   mi_proyecto_sim/publicador_tfs_arucos.py
   mi_proyecto_sim/amcl_localizer.py

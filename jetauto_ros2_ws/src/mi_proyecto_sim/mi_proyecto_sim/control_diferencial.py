@@ -84,10 +84,10 @@ class ControlDiferencial(Node):
         self.obstaculo_cerca = False
         self.min_dist_frontal = 1.5
         # Umbrales de repulsion (+15% vs version 360 anterior)
-        self.umbral_frontal = 0.63   # antes 0.55  (cono frontal +-20 deg)
-        self.umbral_lateral = 0.25   # pasillos ~0.25-0.30 m: si es mayor, las 2
+        self.umbral_frontal = 0.69   # +10% (antes 0.63)  (cono frontal +-20 deg)
+        self.umbral_lateral = 0.275  # +10% (antes 0.25). pasillos ~0.25-0.30 m: si es mayor, las 2
                                      # paredes disparan a la vez y traba al robot
-        self.umbral_trasero = 0.35   # cono trasero 95-180 deg (reacciona un poco antes)
+        self.umbral_trasero = 0.35   # rango corto (original). cono trasero 95-180 deg
         # Exponente de la repulsion: mas alto = escala MAS LENTO (lejos casi no
         # empuja, solo se dispara muy cerca del obstaculo). 2=cuadratico (antes),
         # 3=cubico (mas suave al rozar un borde).
@@ -97,7 +97,7 @@ class ControlDiferencial(Node):
         self.ang_lateral = math.radians(95.0)   # 20<=|a|<95 -> lateral ; |a|>=95 -> trasero
         # Peso del cono trasero: bajo a proposito para NO empujar al robot hacia
         # adelante dentro de las esquinas (permite salir en reversa).
-        self.peso_trasero = 0.60   # subido (antes 0.35): repele mejor por detras
+        self.peso_trasero = 0.90   # INTENSIDAD del cono trasero subida (antes 0.60): empuja mas fuerte
         self.fuerza_izq = 0.0
         self.fuerza_der = 0.0
         
@@ -203,7 +203,7 @@ class ControlDiferencial(Node):
 
             if r < umbral:
                 obstaculo = True
-                fuerza = 16.0 * ((umbral - r) / umbral)**self.exp_repulsion  # magnitud subida (antes 10.0)
+                fuerza = 20.0 * ((umbral - r) / umbral)**self.exp_repulsion  # magnitud +25% (antes 16.0)
                 if es_trasero:
                     # Cono trasero: repulsion debil, sin vortex
                     rep_tras_x += -fuerza * math.cos(angle) * self.peso_trasero
@@ -359,7 +359,7 @@ class ControlDiferencial(Node):
             rep_mundo_x = (self.repulsion_x * math.cos(theta) - self.repulsion_y * math.sin(theta))
             rep_mundo_y = (self.repulsion_x * math.sin(theta) + self.repulsion_y * math.cos(theta))
             rep_mag = math.hypot(rep_mundo_x, rep_mundo_y)
-            max_rep = 0.60   # tope subido (antes 0.45) para dejar pasar mas fuerza
+            max_rep = 0.75   # tope +25% (antes 0.60) para dejar pasar mas fuerza de repulsion
             if rep_mag > max_rep:
                 rep_mundo_x = (rep_mundo_x / rep_mag) * max_rep
                 rep_mundo_y = (rep_mundo_y / rep_mag) * max_rep

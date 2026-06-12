@@ -26,7 +26,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPo
 from rclpy.qos import qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import PoseStamped, Twist
-from sensor_msgs.msg import Image, CameraInfo, LaserScan
+from sensor_msgs.msg import Image, CompressedImage, CameraInfo, LaserScan
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener
@@ -170,9 +170,14 @@ class MisionExplorarAruco(Node):
         self.search_substate_end = 0.0
         self.search_steps_done = 0
         self.search_total_steps = max(1, int(round(360.0 / max(1.0, self.search_step_deg))))
-        # deteccion aruco (para aproximacion final)
-        self.K = np.array([[539.13, 0, 320.46], [0, 539.13, 240.02], [0, 0, 1]], dtype=np.float64)
-        self.D = np.zeros((5,), dtype=np.float64)
+        # deteccion aruco (para aproximacion final). Calibracion de fabrica del Orbbec
+        # Astra Pro Plus RGB 640x480 (la sobreescribe /cam_1/camera_info si llega).
+        self.K = np.array([[539.1278076171875, 0, 320.458251953125],
+                           [0, 539.1278076171875, 240.0159454345703],
+                           [0, 0, 1]], dtype=np.float64)
+        self.D = np.array([0.13392946124076843, -0.2676388621330261,
+                           0.0025758773554116488, 0.00267409672960639,
+                           0.14543378353118896], dtype=np.float64)  # k1 k2 p1 p2 k3
         self.aruco_u = None
         self.aruco_dist = None
         self.aruco_last_t = None
@@ -193,6 +198,10 @@ class MisionExplorarAruco(Node):
         self.spin_pub.publish(Bool(data=False))
         self.mapdron_pub = self.create_publisher(OccupancyGrid, '/map_dron', latch)
         self.marker_pub = self.create_publisher(MarkerArray, '/mision_markers', latch)
+        # imagen de debug anotada (lo que ve el robot + deteccion ArUco). Cruda pero
+        # reducida a 480x360 y a ~5 Hz -> ligera para el WiFi y se ve directo en rqt.
+        self.dbg_pub = self.create_publisher(Image, '/mision_aruco_debug', 5)
+        self.dbg_last_t = 0.0
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -255,9 +264,55 @@ class MisionExplorarAruco(Node):
             self.marker_asymmetry = None
         self.aruco_count = min(self.confirm_frames, self.aruco_count + 1) if found else 0
 
+        # Imagen de debug anotada (~6 Hz, suave para el WiFi)
+        now_s = time.time()
+        if now_s - self.dbg_last_t >= 0.15:
+            self.dbg_last_t = now_s
+            self._publish_debug(img, corners, ids)
+
         # Marcar checkpoint solo durante exploracion (con deteccion confirmada)
         if found and self.aruco_count >= self.confirm_frames and self.phase == 'EXPLORANDO':
             self._mark_checkpoint()
+
+    def _publish_debug(self, img, corners, ids):
+        """Publica la imagen del robot con la deteccion ArUco dibujada + datos del
+        parqueo (fase, visible, dist camara/A1, err_x, asimetria, modo de giro).
+        Para VER en vivo por que intercala parqueo<->giro."""
+        try:
+            dbg = img.copy()
+            h, w = dbg.shape[:2]
+            cxi = w // 2
+            cv2.line(dbg, (cxi, 0), (cxi, h), (0, 255, 255), 1)          # centro de imagen
+            if ids is not None and len(corners) > 0:
+                cv2.aruco.drawDetectedMarkers(dbg, corners, np.array(ids).reshape(-1, 1))
+            vis = self._aruco_visible()
+            err_x = (w / 2.0 - self.marker_cx) if self.marker_cx is not None else None
+            if self.marker_cx is not None:
+                mcx = int(self.marker_cx)
+                col = (0, 255, 0) if vis else (0, 165, 255)             # verde=visible, naranja=sin confirmar
+                cv2.circle(dbg, (mcx, h // 2), 6, col, -1)
+                cv2.line(dbg, (cxi, h // 2), (mcx, h // 2), col, 2)
+            asym = self.marker_asymmetry
+            dcam = self.aruco_dist
+            dlow = self.low_front_dist
+            modo = 'BARRIDO' if self.searching_stepped else ('GIRO' if self.spinning else '')
+            lines = [
+                f'fase={self.phase}  visible={vis} ({self.aruco_count}/{self.confirm_frames}) {modo}',
+                f'cara={self.seen_id}  dist_cam=' + (f'{dcam:.2f}m' if dcam else '--'),
+                'A1=' + (f'{dlow:.2f}m' if dlow is not None else 'None') +
+                    '  err_x=' + (f'{err_x:+.0f}px' if err_x is not None else '--') +
+                    '  asim=' + (f'{asym:+.2f}' if asym is not None else '--'),
+            ]
+            y = 18
+            for t in lines:
+                cv2.putText(dbg, t, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(dbg, t, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                y += 20
+            if dbg.shape[1] != 480:
+                dbg = cv2.resize(dbg, (480, 360))
+            self.dbg_pub.publish(self.bridge.cv2_to_imgmsg(dbg, 'bgr8'))
+        except Exception as e:
+            self.get_logger().warn(f'debug img: {e}', throttle_duration_sec=5.0)
 
     def _mark_checkpoint(self):
         pose = self._robot_pose()

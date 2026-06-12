@@ -69,7 +69,7 @@ def generate_launch_description():
             'park_distance': 0.30,        # m al cubo (medido con /scan_low)
             'scan_low_topic': '/scan_low',
             'low_front_deg': 20.0,        # cono frontal del A1 del parqueo (pedido)
-            'low_front_offset_deg': -75.0,  # A1 montado ~75 deg girado (cubo medido a -73 deg en su frame)
+            'low_front_offset_deg': 0.0,  # A1 corregido fisicamente: su 0 apunta al frente
             'strafe_sign': 1.0,           # invertir si strafea al lado equivocado
             # --- Barrido LENTO escalonado al regresar (evita desenfoque del ArUco) ---
             'search_step_deg': 25.0,      # grados por pasito (mas chico = mas paradas)

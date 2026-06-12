@@ -27,7 +27,7 @@ from rclpy.qos import qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import PoseStamped, Twist
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo, LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Empty
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener
 from cv_bridge import CvBridge
@@ -136,6 +136,9 @@ class MisionExplorarAruco(Node):
         self.park_strafe_gate_px = float(gp('park_strafe_gate_px', 45.0))  # solo strafe si ~centrado
         self.park_stop_px   = float(gp('park_stop_px', 20.0))  # tolerancia de paro: centrado
         self.park_stop_asym = float(gp('park_stop_asym', 0.08))# tolerancia de paro: perpendicular
+        # Fuente de la distancia de avance: True = camara (aruco_dist, siempre ve el cubo),
+        # False = lidar A1 (/scan_low). El A1 no ve el cubo de forma fiable en este robot.
+        self.advance_use_camera = bool(gp('advance_use_camera', True))
         # Acercamiento MECANUM al punto exacto (seen_from) sin restriccion de lookahead:
         # al "llegar" aprox con el Kelly diferencial, el mecanum lleva el CENTRO al punto.
         self.mec_tol = float(gp('mec_tol', 0.10))   # m: "llegue al punto exacto"
@@ -160,6 +163,8 @@ class MisionExplorarAruco(Node):
         self.map_msg = None
         self.active_goal = None
         self.goal_start_t = None
+        self.goal_resend_t = 0.0
+        self.replan_period = float(gp('replan_period', 3.0))  # s: re-mandar meta + replan en exploracion
         self.blacklist = []
         self.empty_rounds = 0
         self.exp_started = False
@@ -210,6 +215,7 @@ class MisionExplorarAruco(Node):
         self.goal_pub = self.create_publisher(PoseStamped, self.goal_topic, 10)
         self.cmd_pub  = self.create_publisher(Twist, '/cmd_vel', 10)
         self.spin_pub = self.create_publisher(Bool, '/explorador_spin', latch)
+        self.replan_pub = self.create_publisher(Empty, '/replan_request', 10)
         self.spin_pub.publish(Bool(data=False))
         self.mapdron_pub = self.create_publisher(OccupancyGrid, '/map_dron', latch)
         self.marker_pub = self.create_publisher(MarkerArray, '/mision_markers', latch)
@@ -423,6 +429,13 @@ class MisionExplorarAruco(Node):
             elif (time.time()-self.goal_start_t) > self.goal_timeout:
                 self.blacklist.append(self.active_goal); done = True
             if not done:
+                # Replaneo PERIODICO: el planner no replanea solo tras el primer plan
+                # (su timer se auto-cancela). Re-mandamos la meta + /replan_request cada
+                # replan_period s para no quedarnos pegados a un waypoint inalcanzable.
+                if time.time() - self.goal_resend_t > self.replan_period:
+                    self._publish_goal(self.active_goal)
+                    self.replan_pub.publish(Empty())
+                    self.goal_resend_t = time.time()
                 return
             self.active_goal = None
             if self.spin_on_arrival:
@@ -443,6 +456,7 @@ class MisionExplorarAruco(Node):
         if target is not None:
             self.active_goal = target
             self.goal_start_t = time.time()
+            self.goal_resend_t = time.time()
             self._publish_goal(target)
             self.get_logger().info(f'Frontera -> ({target[0]:+.2f},{target[1]:+.2f}) [{n}]')
 
@@ -626,12 +640,13 @@ class MisionExplorarAruco(Node):
 
         # 3) AVANCE: distancia del A1, SOLO bien alineado (asi el cono del A1 cae sobre el cubo,
         # no barre paredes al girar). Gate de avance mas laxo que el de paro para que progrese.
-        if self.low_front_dist is None:
+        adv_dist = self.aruco_dist if self.advance_use_camera else self.low_front_dist
+        if adv_dist is None:
             cmd.linear.x = 0.0
             self.cmd_pub.publish(cmd)
-            self.get_logger().info('Esperando /scan_low (A1) para el avance...', throttle_duration_sec=3.0)
+            self.get_logger().info('Esperando distancia para el avance...', throttle_duration_sec=3.0)
             return
-        dist_err = self.low_front_dist - self.park_distance
+        dist_err = adv_dist - self.park_distance
         advance_ok = abs(err_x) < 30.0 and abs(asym) < 0.12
         stop_ok    = abs(err_x) < self.park_stop_px and abs(asym) < self.park_stop_asym
         if abs(dist_err) > 0.04 and advance_ok:
@@ -648,7 +663,7 @@ class MisionExplorarAruco(Node):
             return
         self.cmd_pub.publish(cmd)
         self.get_logger().info(
-            f'Parqueo: dist_low={self.low_front_dist:.2f}m centro={err_x:+.0f}px asim={asym:+.2f} '
+            f'Parqueo: dist={adv_dist:.2f}m centro={err_x:+.0f}px asim={asym:+.2f} '
             f'[v={cmd.linear.x:+.2f} vy={cmd.linear.y:+.2f} w={cmd.angular.z:+.2f}]',
             throttle_duration_sec=1.0)
 

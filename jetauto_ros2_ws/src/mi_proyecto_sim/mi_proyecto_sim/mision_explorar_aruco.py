@@ -124,16 +124,30 @@ class MisionExplorarAruco(Node):
         self.scan_low_topic = gp('scan_low_topic', '/scan_low')
         self.low_front_half = math.radians(float(gp('low_front_deg', 20.0)))       # cono frontal
         self.low_front_off  = math.radians(float(gp('low_front_offset_deg', 0.0))) # si el A1 esta rotado
-        self.kp_w = float(gp('kp_w', 0.010));  self.ki_w = float(gp('ki_w', 0.004))
-        self.kp_strafe = float(gp('kp_strafe', 0.5)); self.ki_strafe = float(gp('ki_strafe', 0.1))
-        self.kp_v = float(gp('kp_v', 0.4));    self.ki_v = float(gp('ki_v', 0.15))
-        self.vy_max = float(gp('vy_max', 0.15))
+        self.kp_w = float(gp('kp_w', 0.010));  self.ki_w = float(gp('ki_w', 0.0015))  # ki bajo: menos windup
+        self.kp_strafe = float(gp('kp_strafe', 0.35)); self.ki_strafe = float(gp('ki_strafe', 0.03))
+        self.kp_v = float(gp('kp_v', 0.4));    self.ki_v = float(gp('ki_v', 0.10))
+        self.vy_max = float(gp('vy_max', 0.10))
         self.strafe_sign = float(gp('strafe_sign', 1.0))   # invertir si strafea al lado equivocado
+        # --- Anti-oscilacion del parqueo ---
+        self.park_w_max     = float(gp('park_w_max', 0.35))    # cap de giro suave (vs w_max 0.6)
+        self.park_dead_px   = float(gp('park_dead_px', 12.0))  # zona muerta del centrado (px)
+        self.park_dead_asym = float(gp('park_dead_asym', 0.04))# zona muerta de la asimetria
+        self.park_strafe_gate_px = float(gp('park_strafe_gate_px', 45.0))  # solo strafe si ~centrado
+        self.park_stop_px   = float(gp('park_stop_px', 20.0))  # tolerancia de paro: centrado
+        self.park_stop_asym = float(gp('park_stop_asym', 0.08))# tolerancia de paro: perpendicular
         # Acercamiento MECANUM al punto exacto (seen_from) sin restriccion de lookahead:
         # al "llegar" aprox con el Kelly diferencial, el mecanum lleva el CENTRO al punto.
         self.mec_tol = float(gp('mec_tol', 0.10))   # m: "llegue al punto exacto"
         self.mec_v   = float(gp('mec_v', 0.12))     # m/s max del acercamiento
         self.mec_k   = float(gp('mec_k', 0.8))      # ganancia
+        # Repulsion DURANTE el acercamiento mecanum (esquiva paredes con el MS200 de arriba,
+        # que NO ve el cubo bajito, asi que no estorba el acercamiento al cubo).
+        self.scan_main_topic = gp('scan_main_topic', '/scan')
+        self.mec_rep_thr = float(gp('mec_rep_thr', 0.40))   # m: a partir de aqui repele
+        self.mec_k_rep   = float(gp('mec_k_rep', 0.12))     # ganancia de la repulsion
+        self.mec_rep_max = float(gp('mec_rep_max', 0.10))   # m/s: tope de la repulsion
+        self.rep_x = 0.0; self.rep_y = 0.0
         self.img_w = 640
         self.marker_cx = None
         self.marker_asymmetry = None
@@ -192,6 +206,7 @@ class MisionExplorarAruco(Node):
         self.create_subscription(CameraInfo, self.info_topic, self._info_cb, 10)
         self.create_subscription(Image, self.cam_topic, self._img_cb, qos_profile_sensor_data)
         self.create_subscription(LaserScan, self.scan_low_topic, self._scan_low_cb, qos_profile_sensor_data)
+        self.create_subscription(LaserScan, self.scan_main_topic, self._scan_main_cb, qos_profile_sensor_data)
         self.goal_pub = self.create_publisher(PoseStamped, self.goal_topic, 10)
         self.cmd_pub  = self.create_publisher(Twist, '/cmd_vel', 10)
         self.spin_pub = self.create_publisher(Bool, '/explorador_spin', latch)
@@ -350,6 +365,27 @@ class MisionExplorarAruco(Node):
             a += msg.angle_increment
         self.low_front_dist = best if best < float('inf') else None
 
+    def _scan_main_cb(self, msg):
+        # Vector de repulsion en frame ROBOT (angulo 0 = frente) desde el MS200 de arriba.
+        # Solo se usa en el acercamiento mecanum para esquivar paredes.
+        rx = ry = 0.0
+        thr = self.mec_rep_thr
+        a = msg.angle_min
+        for r in msg.ranges:
+            if 0.05 < r < thr and not math.isnan(r):
+                w = (thr - r) / thr
+                rx += -math.cos(a) * w
+                ry += -math.sin(a) * w
+            a += msg.angle_increment
+        self.rep_x = rx; self.rep_y = ry
+
+    def _aruco_seen_now(self):
+        # Mas laxo que _aruco_visible (no exige confirm_frames): vio el cubo recien.
+        # Para comprometerse a parquear sobre la cara que ve AHORA, no la guardada.
+        if self.aruco_last_t is None or self.marker_cx is None or self.aruco_count < 2:
+            return False
+        return (self.get_clock().now() - self.aruco_last_t).nanoseconds/1e9 < self.aruco_lost_timeout
+
     def _aruco_visible(self):
         if self.aruco_last_t is None or self.aruco_count < self.confirm_frames:
             return False
@@ -437,8 +473,8 @@ class MisionExplorarAruco(Node):
             self._publish_goal(self.return_goal)
             self.return_sent_t = time.time()
         d = math.hypot(self.return_goal[0]-rxy[0], self.return_goal[1]-rxy[1])
-        # Si ya veo el cubo en el camino, directo al parqueo
-        if self._aruco_visible():
+        # Si ya veo el cubo en el camino, directo al parqueo (sobre la cara que veo)
+        if self._aruco_seen_now():
             self.get_logger().info('Veo el cubo de regreso -> aproximacion final.')
             self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
             self.phase = 'APROX_FINAL'
@@ -463,7 +499,7 @@ class MisionExplorarAruco(Node):
         if self.searching_stepped:
             now = time.time()
             # mira en CADA tick (sobre todo durante la pausa, ya parado y nitido)
-            if self._aruco_visible():
+            if self._aruco_seen_now():
                 self.cmd_pub.publish(Twist())
                 self.searching_stepped = False
                 self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
@@ -493,7 +529,7 @@ class MisionExplorarAruco(Node):
         if self.spinning:
             searching = self.search_at_checkpoint and self.phase == 'MEC_APPROACH'
             # DURANTE el giro de busqueda: si aparece el cubo, CORTAR el giro y parquear
-            if searching and self._aruco_visible():
+            if searching and self._aruco_seen_now():
                 self.cmd_pub.publish(Twist())
                 self.spinning = False
                 self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
@@ -513,9 +549,12 @@ class MisionExplorarAruco(Node):
 
         # ---- ACERCAMIENTO MECANUM al punto exacto (sin lookahead) + buscar ----
         if self.phase == 'MEC_APPROACH':
-            if self._aruco_visible():
+            # Si ve el cubo AHORA (cualquier cara), se compromete a parquear sobre esa,
+            # no sigue manejando al punto guardado.
+            if self._aruco_seen_now():
                 self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
                 self.phase = 'APROX_FINAL'
+                self.get_logger().info('Veo una cara del cubo -> parqueo sobre esa.')
                 return
             pose = self._robot_pose()
             if pose is None:
@@ -528,11 +567,20 @@ class MisionExplorarAruco(Node):
                 # mecanum: llevar el CENTRO al punto (vx adelante, vy strafe), sin lookahead
                 fx =  ex * math.cos(rth) + ey * math.sin(rth)   # adelante (robot)
                 fy = -ex * math.sin(rth) + ey * math.cos(rth)   # izquierda (robot)
+                # repulsion (frame robot, MS200) capada -> esquiva paredes en el mecanum
+                repx = self.mec_k_rep * self.rep_x
+                repy = self.mec_k_rep * self.rep_y
+                rm = math.hypot(repx, repy)
+                if rm > self.mec_rep_max:
+                    repx = repx / rm * self.mec_rep_max
+                    repy = repy / rm * self.mec_rep_max
                 cmd = Twist()
-                cmd.linear.x = max(-self.mec_v, min(self.mec_v, self.mec_k * fx))
-                cmd.linear.y = max(-self.mec_v, min(self.mec_v, self.mec_k * fy))
+                cmd.linear.x = max(-self.mec_v, min(self.mec_v, self.mec_k * fx + repx))
+                cmd.linear.y = max(-self.mec_v, min(self.mec_v, self.mec_k * fy + repy))
                 self.cmd_pub.publish(cmd)
-                self.get_logger().info(f'Mecanum -> punto exacto: dist={dist:.2f} m', throttle_duration_sec=1.0)
+                self.get_logger().info(
+                    f'Mecanum -> punto exacto: dist={dist:.2f} m rep=({repx:+.2f},{repy:+.2f})',
+                    throttle_duration_sec=1.0)
             else:
                 # en el punto -> girar a buscar el cubo (con reintentos)
                 self.cmd_pub.publish(Twist())
@@ -555,32 +603,46 @@ class MisionExplorarAruco(Node):
             return
         dt = 0.066
         cmd = Twist()
-        # 1) GIRO: centrar el marcador en la imagen (P+I)
         err_x = (self.img_w / 2.0) - self.marker_cx
-        self.vs_w_i = max(-100.0, min(100.0, self.vs_w_i + err_x * dt))
-        w = self.steer_sign * (self.kp_w * err_x + self.ki_w * self.vs_w_i)
-        cmd.angular.z = max(-self.w_max, min(self.w_max, w))
-        # 2) STRAFE (mecanum): perpendicularidad por marker_asymmetry
         asym = self.marker_asymmetry if self.marker_asymmetry is not None else 0.0
-        self.vs_strafe_i = max(-1.0, min(1.0, self.vs_strafe_i + asym * dt))
-        strafe = self.kp_strafe * asym + self.ki_strafe * self.vs_strafe_i
-        cmd.linear.y = self.strafe_sign * max(-self.vy_max, min(self.vy_max, strafe))
-        # 3) AVANCE: distancia al cubo con el lidar de ABAJO (/scan_low)
+
+        # 1) GIRO: centrar el marcador (P+I) con ZONA MUERTA y cap suave (no jitterea)
+        if abs(err_x) < self.park_dead_px:
+            self.vs_w_i = 0.0
+            cmd.angular.z = 0.0
+        else:
+            self.vs_w_i = max(-100.0, min(100.0, self.vs_w_i + err_x * dt))
+            w = self.steer_sign * (self.kp_w * err_x + self.ki_w * self.vs_w_i)
+            cmd.angular.z = max(-self.park_w_max, min(self.park_w_max, w))
+
+        # 2) STRAFE: perpendicularidad, SOLO cuando ya esta ~centrado (desacopla giro<->strafe)
+        if abs(err_x) < self.park_strafe_gate_px and abs(asym) > self.park_dead_asym:
+            self.vs_strafe_i = max(-1.0, min(1.0, self.vs_strafe_i + asym * dt))
+            strafe = self.kp_strafe * asym + self.ki_strafe * self.vs_strafe_i
+            cmd.linear.y = self.strafe_sign * max(-self.vy_max, min(self.vy_max, strafe))
+        else:
+            self.vs_strafe_i = 0.0
+            cmd.linear.y = 0.0
+
+        # 3) AVANCE: distancia del A1, SOLO bien alineado (asi el cono del A1 cae sobre el cubo,
+        # no barre paredes al girar). Gate de avance mas laxo que el de paro para que progrese.
         if self.low_front_dist is None:
             cmd.linear.x = 0.0
             self.cmd_pub.publish(cmd)
             self.get_logger().info('Esperando /scan_low (A1) para el avance...', throttle_duration_sec=3.0)
             return
         dist_err = self.low_front_dist - self.park_distance
-        self.vs_v_i = max(-0.5, min(0.5, self.vs_v_i + dist_err * dt))
-        v = self.kp_v * dist_err + self.ki_v * self.vs_v_i
-        # solo avanzar si esta razonablemente centrado y perpendicular (centra primero)
-        if abs(dist_err) > 0.05 and abs(err_x) < 50 and abs(asym) < 0.20:
-            cmd.linear.x = max(-0.12, min(0.12, v))
+        advance_ok = abs(err_x) < 30.0 and abs(asym) < 0.12
+        stop_ok    = abs(err_x) < self.park_stop_px and abs(asym) < self.park_stop_asym
+        if abs(dist_err) > 0.04 and advance_ok:
+            self.vs_v_i = max(-0.5, min(0.5, self.vs_v_i + dist_err * dt))
+            v = self.kp_v * dist_err + self.ki_v * self.vs_v_i
+            cmd.linear.x = max(-0.10, min(0.10, v))
         else:
+            self.vs_v_i = 0.0
             cmd.linear.x = 0.0
-        # PARO: distancia(lidar) ok + marcador MUY centrado + asimetria minima
-        if abs(dist_err) < 0.05 and abs(err_x) < 15 and abs(asym) < 0.05:
+        # PARO: distancia ok + centrado + perpendicular
+        if abs(dist_err) < 0.04 and stop_ok:
             self.cmd_pub.publish(Twist())
             self._finish(found=True)
             return

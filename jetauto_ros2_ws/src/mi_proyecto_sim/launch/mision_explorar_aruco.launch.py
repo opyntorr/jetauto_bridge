@@ -54,7 +54,7 @@ def generate_launch_description():
             'stop_distance': 0.40,
             'marker_size': 0.1125,        # lado real del ArUco del cubo (medido), antes 0.12
             'auto_save': True,
-            'mission_timeout': 400.0,     # tope global: explore 150 + regreso + barrido + parqueo
+            'mission_timeout': 540.0,     # tope global: explore 240 + regreso + barrido + parqueo
             # exploracion
             'reach_dist': 0.50,         # set "rincones chicos": > stop del control (0.45)
             'min_goal_dist': 0.60,      # > reach_dist (0.50): si fuera menor, elige fronteras
@@ -64,12 +64,12 @@ def generate_launch_description():
             'goal_timeout': 35.0,
             'initial_spin': True, 'spin_on_arrival': True,
             'spin_seconds': 7.0, 'w_spin': 0.5,   # media vuelta por frontera (antes 13s = vuelta entera)
-            'explore_timeout': 150.0,  # safeguard: corta el mapeo a los 150 s (mas cobertura)
+            'explore_timeout': 240.0,  # safeguard: corta el mapeo a los 240 s (mas cobertura)
             # --- Parqueo mecanum final (servo visual + lidar A1 de abajo) ---
             'park_distance': 0.30,        # m al cubo (medido con /scan_low)
             'scan_low_topic': '/scan_low',
-            'low_front_deg': 12.0,        # cono frontal del A1 (6 fue muy estrecho, 20 cazaba paredes)
-            'low_front_offset_deg': 0.0,  # ajustar si el A1 quedo rotado
+            'low_front_deg': 20.0,        # cono frontal del A1 del parqueo (pedido)
+            'low_front_offset_deg': -75.0,  # A1 montado ~75 deg girado (cubo medido a -73 deg en su frame)
             'strafe_sign': 1.0,           # invertir si strafea al lado equivocado
             # --- Barrido LENTO escalonado al regresar (evita desenfoque del ArUco) ---
             'search_step_deg': 25.0,      # grados por pasito (mas chico = mas paradas)

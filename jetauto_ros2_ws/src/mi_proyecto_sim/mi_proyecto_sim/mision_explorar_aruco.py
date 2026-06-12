@@ -257,12 +257,15 @@ class MisionExplorarAruco(Node):
         found = False
         if ids is not None:
             ids = ids.flatten().tolist()
-            # cualquier cara del cubo (0-5); si ve varias, la mas cercana al centro
-            matches = [t for t in self.target_ids if t in ids]
-            if matches:
-                tid = matches[0]
-                self.seen_id = tid
-                i = ids.index(tid)
+            # Puede haber 2 caras del cubo (dos id 5) en vista de esquina. Antes se tomaba
+            # ids.index(tid) = el PRIMERO, cuyo orden NO es estable -> marker_cx saltaba entre
+            # las dos caras y el robot oscilaba "entre los 2 arucos". Ahora elegimos la cara
+            # MAS GRANDE (la mas de frente/cercana): objetivo unico y estable para el parqueo.
+            cand = [j for j, mid in enumerate(ids) if mid in self.target_ids]
+            if cand:
+                i = max(cand, key=lambda j: cv2.contourArea(
+                    corners[j].reshape(4, 2).astype(np.float32)))
+                self.seen_id = ids[i]
                 c = corners[i].reshape(4, 2)
                 self.aruco_u = float(c[:, 0].mean())
                 self.marker_cx = self.aruco_u

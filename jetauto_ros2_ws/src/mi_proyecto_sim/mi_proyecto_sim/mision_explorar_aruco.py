@@ -153,6 +153,7 @@ class MisionExplorarAruco(Node):
         self.rep_x = 0.0; self.rep_y = 0.0
         self.img_w = 640
         self.marker_cx = None
+        self.prev_marker_cx = None   # continuidad: ultima cara seguida (no saltar entre 2 caras)
         self.marker_asymmetry = None
         self.low_front_dist = None
         self.vs_w_i = 0.0; self.vs_strafe_i = 0.0; self.vs_v_i = 0.0
@@ -263,12 +264,24 @@ class MisionExplorarAruco(Node):
             # MAS GRANDE (la mas de frente/cercana): objetivo unico y estable para el parqueo.
             cand = [j for j, mid in enumerate(ids) if mid in self.target_ids]
             if cand:
-                i = max(cand, key=lambda j: cv2.contourArea(
-                    corners[j].reshape(4, 2).astype(np.float32)))
+                _cx = lambda j: float(corners[j].reshape(4, 2)[:, 0].mean())
+                # En vista de esquina las 2 caras del cubo tienen area casi igual, asi que
+                # "la mas grande" salta por ruido. CONTINUIDAD: si veniamos siguiendo una cara
+                # (no perdida), quedarnos con la cara cuyo centro este MAS CERCA del anterior;
+                # si no, arrancar con la mas grande. El servo luego encara esa cara.
+                lost = (self.aruco_last_t is None or
+                        (self.get_clock().now() - self.aruco_last_t).nanoseconds / 1e9
+                        > self.aruco_lost_timeout)
+                if self.prev_marker_cx is not None and not lost:
+                    i = min(cand, key=lambda j: abs(_cx(j) - self.prev_marker_cx))
+                else:
+                    i = max(cand, key=lambda j: cv2.contourArea(
+                        corners[j].reshape(4, 2).astype(np.float32)))
                 self.seen_id = ids[i]
                 c = corners[i].reshape(4, 2)
                 self.aruco_u = float(c[:, 0].mean())
                 self.marker_cx = self.aruco_u
+                self.prev_marker_cx = self.aruco_u
                 # asimetria de la cara (perpendicularidad): lado der vs lado izq
                 ld = float(np.linalg.norm(c[1] - c[2]))
                 li = float(np.linalg.norm(c[3] - c[0]))
@@ -675,7 +688,10 @@ class MisionExplorarAruco(Node):
             return
         self.phase = 'LLEGUE'
         self.cmd_pub.publish(Twist())
-        self.spin_pub.publish(Bool(data=False))
+        # MANTENER el gate: si soltamos /explorador_spin, control_diferencial REANUDA su
+        # ruta vieja (hacia el return_goal, detras del cubo) y mueve el robot tras parquear
+        # (retrocede/gira). Dejandolo en True el control sigue cedido -> el robot se queda parqueado.
+        self.spin_pub.publish(Bool(data=True))
         if found:
             self.get_logger().info(
                 f'===== MISION COMPLETA: cubo (cara {self.seen_id}) a {self.aruco_dist:.2f} m. =====')

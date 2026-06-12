@@ -66,7 +66,7 @@ def generate_launch_description():
             'spin_seconds': 7.0, 'w_spin': 0.5,   # media vuelta por frontera (antes 13s = vuelta entera)
             'explore_timeout': 240.0,  # safeguard: corta el mapeo a los 240 s (mas cobertura)
             # --- Parqueo mecanum final (servo visual + lidar A1 de abajo) ---
-            'park_distance': 0.30,        # m al cubo (medido con /scan_low)
+            'park_distance': 0.40,        # m camara->marcador (0.30 era muy cerca, perdia el marcador)
             'scan_low_topic': '/scan_low',
             'low_front_deg': 20.0,        # cono frontal del A1 del parqueo (pedido)
             'low_front_offset_deg': 0.0,  # A1 corregido fisicamente: su 0 apunta al frente

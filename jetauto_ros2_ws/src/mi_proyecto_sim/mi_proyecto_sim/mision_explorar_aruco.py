@@ -132,10 +132,10 @@ class MisionExplorarAruco(Node):
         # --- Anti-oscilacion del parqueo ---
         self.park_w_max     = float(gp('park_w_max', 0.35))    # cap de giro suave (vs w_max 0.6)
         self.park_dead_px   = float(gp('park_dead_px', 12.0))  # zona muerta del centrado (px)
-        self.park_dead_asym = float(gp('park_dead_asym', 0.02))# zona muerta de la asimetria (mas perpendicular)
+        self.park_dead_asym = float(gp('park_dead_asym', 0.04))# zona muerta de la asimetria
         self.park_strafe_gate_px = float(gp('park_strafe_gate_px', 45.0))  # solo strafe si ~centrado
         self.park_stop_px   = float(gp('park_stop_px', 20.0))  # tolerancia de paro: centrado
-        self.park_stop_asym = float(gp('park_stop_asym', 0.05))# tolerancia de paro: perpendicular (mas estricta)
+        self.park_stop_asym = float(gp('park_stop_asym', 0.08))# tolerancia de paro: perpendicular
         # Fuente de la distancia de avance: True = camara (aruco_dist, siempre ve el cubo),
         # False = lidar A1 (/scan_low). El A1 no ve el cubo de forma fiable en este robot.
         self.advance_use_camera = bool(gp('advance_use_camera', True))

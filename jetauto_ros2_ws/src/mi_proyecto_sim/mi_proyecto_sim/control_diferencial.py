@@ -87,7 +87,7 @@ class ControlDiferencial(Node):
         self.umbral_frontal = 0.69   # +10% (antes 0.63)  (cono frontal +-20 deg)
         self.umbral_lateral = 0.275  # +10% (antes 0.25). pasillos ~0.25-0.30 m: si es mayor, las 2
                                      # paredes disparan a la vez y traba al robot
-        self.umbral_trasero = 0.38   # -7 cm (antes 0.45). cono trasero 95-180 deg
+        self.umbral_trasero = 0.45   # +10 cm (antes 0.35). cono trasero 95-180 deg
         # Exponente de la repulsion: mas alto = escala MAS LENTO (lejos casi no
         # empuja, solo se dispara muy cerca del obstaculo). 2=cuadratico (antes),
         # 3=cubico (mas suave al rozar un borde).
@@ -97,7 +97,7 @@ class ControlDiferencial(Node):
         self.ang_lateral = math.radians(95.0)   # 20<=|a|<95 -> lateral ; |a|>=95 -> trasero
         # Peso del cono trasero: bajo a proposito para NO empujar al robot hacia
         # adelante dentro de las esquinas (permite salir en reversa).
-        self.peso_trasero = 1.10   # INTENSIDAD del cono trasero subida (antes 0.90): empuja mas fuerte
+        self.peso_trasero = 0.90   # INTENSIDAD del cono trasero subida (antes 0.60): empuja mas fuerte
         self.fuerza_izq = 0.0
         self.fuerza_der = 0.0
         

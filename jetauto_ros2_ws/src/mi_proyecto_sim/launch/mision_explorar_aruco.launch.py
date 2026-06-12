@@ -55,13 +55,25 @@ def generate_launch_description():
             'marker_size': 0.12,
             'auto_save': True,
             # exploracion
-            'reach_dist': 0.65, 'min_goal_dist': 0.55,
+            'reach_dist': 0.50,         # set "rincones chicos": > stop del control (0.45)
+            'min_goal_dist': 0.60,      # > reach_dist (0.50): si fuera menor, elige fronteras
+                                        # ya "alcanzadas" -> se queda girando sin ir a ellas
             'min_frontier_cells': 5,    # mas chico -> persigue rincones (antes 12, se rendia)
             'done_retries': 6,          # mas paciencia antes de concluir "mapeo completo"
             'goal_timeout': 35.0,
             'initial_spin': True, 'spin_on_arrival': True,
-            'spin_seconds': 13.0, 'w_spin': 0.5,
+            'spin_seconds': 7.0, 'w_spin': 0.5,   # media vuelta por frontera (antes 13s = vuelta entera)
             'explore_timeout': 90.0,   # safeguard: corta el mapeo a los 90 s
+            # --- Parqueo mecanum final (servo visual + lidar A1 de abajo) ---
+            'park_distance': 0.30,        # m al cubo (medido con /scan_low)
+            'scan_low_topic': '/scan_low',
+            'low_front_deg': 20.0,        # cono frontal del A1
+            'low_front_offset_deg': 0.0,  # ajustar si el A1 quedo rotado
+            'strafe_sign': 1.0,           # invertir si strafea al lado equivocado
+            # --- Barrido LENTO escalonado al regresar (evita desenfoque del ArUco) ---
+            'search_step_deg': 25.0,      # grados por pasito (mas chico = mas paradas)
+            'search_w': 0.30,             # rad/s LENTO del pasito (bajar si aun sale borroso)
+            'search_pause_s': 0.9,        # s parado mirando entre pasos (subir si tarda en enfocar)
         }])
 
     delayed = TimerAction(period=8.0, actions=[

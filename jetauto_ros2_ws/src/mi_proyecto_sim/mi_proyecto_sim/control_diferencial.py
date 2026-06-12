@@ -315,7 +315,7 @@ class ControlDiferencial(Node):
         )
 
         # Condición de llegada puramente por distancia al final
-        if dist_to_final < 0.6:
+        if dist_to_final < 0.45:   # set "rincones chicos" (era 0.6); con h=0.30 hay algo de serpenteo al final
             self.ruta_completada = True
             self.stop_robot()
             self.get_logger().info(f"Meta alcanzada (dist={dist_to_final:.3f}m). Deteniendo.")

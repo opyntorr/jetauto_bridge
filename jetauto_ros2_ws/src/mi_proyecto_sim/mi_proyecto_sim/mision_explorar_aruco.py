@@ -26,7 +26,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPo
 from rclpy.qos import qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import PoseStamped, Twist
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, LaserScan
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener
@@ -102,7 +102,9 @@ class MisionExplorarAruco(Node):
         self.cam_topic     = gp('camera_topic', '/cam_1/image')
         self.info_topic    = gp('camera_info_topic', '/cam_1/camera_info')
         self.return_offset = float(gp('return_offset', 0.55))  # m del checkpoint a la meta de regreso
-        self.return_reach  = float(gp('return_reach', 0.45))   # m para considerar "llegue al checkpoint"
+        # > 0.6 (control_diferencial se detiene a ~0.6 m de la meta): si fuera menor,
+        # el robot para mas lejos que return_reach y NUNCA dispara el parqueo.
+        self.return_reach  = float(gp('return_reach', 0.75))   # m para considerar "llegue al checkpoint"
         self.k_ang   = float(gp('k_ang', 1.3))
         # Signo del giro de centrado. Si gira AL REVES del cubo (imagen espejeada o
         # convencion de giro del chasis), invertir: +1.0 o -1.0.
@@ -114,6 +116,29 @@ class MisionExplorarAruco(Node):
         self.app_center_tol = float(gp('center_tol', 0.06))
         self.aruco_lost_timeout = float(gp('aruco_lost_timeout', 1.0))
         self.confirm_frames = int(gp('confirm_frames', 3))
+
+        # --- Parqueo MECANUM (servo visual + lidar de abajo A1 /scan_low) ---
+        # Avance por distancia del lidar bajo (ve el cubo); strafe por marker_asymmetry
+        # (perpendicularidad a la cara); giro por centrado del marcador en la imagen.
+        self.park_distance  = float(gp('park_distance', 0.30))      # m al cubo (lidar A1)
+        self.scan_low_topic = gp('scan_low_topic', '/scan_low')
+        self.low_front_half = math.radians(float(gp('low_front_deg', 20.0)))       # cono frontal
+        self.low_front_off  = math.radians(float(gp('low_front_offset_deg', 0.0))) # si el A1 esta rotado
+        self.kp_w = float(gp('kp_w', 0.010));  self.ki_w = float(gp('ki_w', 0.004))
+        self.kp_strafe = float(gp('kp_strafe', 0.5)); self.ki_strafe = float(gp('ki_strafe', 0.1))
+        self.kp_v = float(gp('kp_v', 0.4));    self.ki_v = float(gp('ki_v', 0.15))
+        self.vy_max = float(gp('vy_max', 0.15))
+        self.strafe_sign = float(gp('strafe_sign', 1.0))   # invertir si strafea al lado equivocado
+        # Acercamiento MECANUM al punto exacto (seen_from) sin restriccion de lookahead:
+        # al "llegar" aprox con el Kelly diferencial, el mecanum lleva el CENTRO al punto.
+        self.mec_tol = float(gp('mec_tol', 0.10))   # m: "llegue al punto exacto"
+        self.mec_v   = float(gp('mec_v', 0.12))     # m/s max del acercamiento
+        self.mec_k   = float(gp('mec_k', 0.8))      # ganancia
+        self.img_w = 640
+        self.marker_cx = None
+        self.marker_asymmetry = None
+        self.low_front_dist = None
+        self.vs_w_i = 0.0; self.vs_strafe_i = 0.0; self.vs_v_i = 0.0
 
         # ---- estado ----
         self.phase = 'EXPLORANDO'   # EXPLORANDO -> VOLVIENDO -> APROX_FINAL -> LLEGUE
@@ -133,6 +158,18 @@ class MisionExplorarAruco(Node):
         self.return_goal = None
         self.return_sent_t = 0.0
         self.search_at_checkpoint = False
+        self.search_attempts = 0
+        self.max_search = int(gp('max_search', 4))   # reintentos de barrido para reencontrar el cubo
+        # --- Barrido LENTO escalonado para reencontrar el cubo (evita desenfoque) ---
+        # En vez de girar continuo (borroso), gira un pasito -> se DETIENE -> mira -> repite.
+        self.search_step_deg = float(gp('search_step_deg', 25.0))   # grados por pasito
+        self.search_w        = float(gp('search_w', 0.30))          # rad/s LENTO del pasito
+        self.search_pause_s  = float(gp('search_pause_s', 0.9))     # s parado mirando (camara nitida)
+        self.searching_stepped = False
+        self.search_substate = 'pause'   # 'pause' (mirando) | 'rotate' (girando un paso)
+        self.search_substate_end = 0.0
+        self.search_steps_done = 0
+        self.search_total_steps = max(1, int(round(360.0 / max(1.0, self.search_step_deg))))
         # deteccion aruco (para aproximacion final)
         self.K = np.array([[539.13, 0, 320.46], [0, 539.13, 240.02], [0, 0, 1]], dtype=np.float64)
         self.D = np.zeros((5,), dtype=np.float64)
@@ -149,6 +186,7 @@ class MisionExplorarAruco(Node):
         self.create_subscription(OccupancyGrid, self.map_topic, self._map_cb, latch)
         self.create_subscription(CameraInfo, self.info_topic, self._info_cb, 10)
         self.create_subscription(Image, self.cam_topic, self._img_cb, qos_profile_sensor_data)
+        self.create_subscription(LaserScan, self.scan_low_topic, self._scan_low_cb, qos_profile_sensor_data)
         self.goal_pub = self.create_publisher(PoseStamped, self.goal_topic, 10)
         self.cmd_pub  = self.create_publisher(Twist, '/cmd_vel', 10)
         self.spin_pub = self.create_publisher(Bool, '/explorador_spin', latch)
@@ -181,6 +219,7 @@ class MisionExplorarAruco(Node):
         except Exception:
             return
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        self.img_w = gray.shape[1]
         if self.api == 'new':
             corners, ids, _ = self.detector.detectMarkers(gray)
         else:
@@ -196,6 +235,12 @@ class MisionExplorarAruco(Node):
                 i = ids.index(tid)
                 c = corners[i].reshape(4, 2)
                 self.aruco_u = float(c[:, 0].mean())
+                self.marker_cx = self.aruco_u
+                # asimetria de la cara (perpendicularidad): lado der vs lado izq
+                ld = float(np.linalg.norm(c[1] - c[2]))
+                li = float(np.linalg.norm(c[3] - c[0]))
+                avg = (ld + li) / 2.0
+                self.marker_asymmetry = (ld - li) / avg if avg > 0 else 0.0
                 try:
                     _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
                         [corners[i]], self.marker_size, self.K, self.D)
@@ -205,6 +250,9 @@ class MisionExplorarAruco(Node):
                     self.aruco_dist = (self.K[0, 0] * self.marker_size) / max(side, 1.0)
                 self.aruco_last_t = self.get_clock().now()
                 found = True
+        if not found:
+            self.marker_cx = None
+            self.marker_asymmetry = None
         self.aruco_count = min(self.confirm_frames, self.aruco_count + 1) if found else 0
 
         # Marcar checkpoint solo durante exploracion (con deteccion confirmada)
@@ -234,6 +282,19 @@ class MisionExplorarAruco(Node):
                 f'Sigo mapeando.')
             self._publish_markers()
 
+    def _scan_low_cb(self, msg):
+        # Distancia FRONTAL del lidar de abajo (A1): min en un cono al frente.
+        # Ve el cubo (objeto bajito) que el MS200 de arriba no alcanza.
+        best = float('inf')
+        a = msg.angle_min
+        for r in msg.ranges:
+            if 0.05 < r < float('inf') and not math.isnan(r):
+                d = math.atan2(math.sin(a - self.low_front_off), math.cos(a - self.low_front_off))
+                if abs(d) <= self.low_front_half and r < best:
+                    best = r
+            a += msg.angle_increment
+        self.low_front_dist = best if best < float('inf') else None
+
     def _aruco_visible(self):
         if self.aruco_last_t is None or self.aruco_count < self.confirm_frames:
             return False
@@ -241,7 +302,7 @@ class MisionExplorarAruco(Node):
 
     # ================= mision (2 Hz) =================
     def _mission_tick(self):
-        if self.phase in ('APROX_FINAL', 'LLEGUE'):
+        if self.phase in ('MEC_APPROACH', 'APROX_FINAL', 'LLEGUE'):
             return
         if self.spinning:
             return
@@ -321,15 +382,19 @@ class MisionExplorarAruco(Node):
             self._publish_goal(self.return_goal)
             self.return_sent_t = time.time()
         d = math.hypot(self.return_goal[0]-rxy[0], self.return_goal[1]-rxy[1])
-        if d < self.return_reach:
-            if self._aruco_visible():
-                self.get_logger().info('Llegue al checkpoint y veo el ArUco -> aproximacion final.')
-                self.phase = 'APROX_FINAL'
-                self.spin_pub.publish(Bool(data=True))   # control cede /cmd_vel
-            elif not self.search_at_checkpoint:
-                self.get_logger().info('En el checkpoint pero no veo el ArUco -> giro 360 para buscarlo.')
-                self.search_at_checkpoint = True
-                self._start_spin('buscar-en-checkpoint')
+        # Si ya veo el cubo en el camino, directo al parqueo
+        if self._aruco_visible():
+            self.get_logger().info('Veo el cubo de regreso -> aproximacion final.')
+            self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
+            self.phase = 'APROX_FINAL'
+            self.spin_pub.publish(Bool(data=True))
+            return
+        # Llegada APROX del Kelly diferencial (se detiene ~0.6 m por el lookahead):
+        # tomar control MECANUM para llevar el CENTRO al punto EXACTO y ahi girar.
+        if d < self.return_reach and not self.spinning:
+            self.get_logger().info('Llegada aprox -> control MECANUM al punto exacto + buscar.')
+            self.phase = 'MEC_APPROACH'
+            self.spin_pub.publish(Bool(data=True))   # control diferencial cede /cmd_vel
 
     # ================= fast (15 Hz): giros + aproximacion final =================
     def _fast_tick(self):
@@ -338,38 +403,136 @@ class MisionExplorarAruco(Node):
             self.get_logger().warn('TIMEOUT GLOBAL de mision -> deteniendo y guardando.')
             self._finish(found=(self.phase == 'APROX_FINAL'))
             return
+
+        # ---- BARRIDO LENTO escalonado: reencontrar el cubo SIN desenfoque ----
+        if self.searching_stepped:
+            now = time.time()
+            # mira en CADA tick (sobre todo durante la pausa, ya parado y nitido)
+            if self._aruco_visible():
+                self.cmd_pub.publish(Twist())
+                self.searching_stepped = False
+                self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
+                self.phase = 'APROX_FINAL'
+                self.get_logger().info('Cubo encontrado en el barrido lento -> parqueo.')
+                return
+            if self.search_substate == 'pause':
+                self.cmd_pub.publish(Twist())   # PARADO mirando (camara nitida)
+                if now >= self.search_substate_end:
+                    if self.search_steps_done >= self.search_total_steps:
+                        # vuelta completa sin verlo -> fin del barrido (MEC_APPROACH reintenta/rinde)
+                        self.searching_stepped = False
+                        self.search_at_checkpoint = False
+                    else:
+                        self.search_substate = 'rotate'
+                        self.search_substate_end = now + (math.radians(self.search_step_deg) / self.search_w)
+            else:  # rotate: un pasito LENTO
+                if now < self.search_substate_end:
+                    t = Twist(); t.angular.z = float(self.search_w); self.cmd_pub.publish(t)
+                else:
+                    self.cmd_pub.publish(Twist())   # detener ANTES de mirar
+                    self.search_steps_done += 1
+                    self.search_substate = 'pause'
+                    self.search_substate_end = now + self.search_pause_s
+            return
+
         if self.spinning:
+            searching = self.search_at_checkpoint and self.phase == 'MEC_APPROACH'
+            # DURANTE el giro de busqueda: si aparece el cubo, CORTAR el giro y parquear
+            if searching and self._aruco_visible():
+                self.cmd_pub.publish(Twist())
+                self.spinning = False
+                self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
+                self.phase = 'APROX_FINAL'
+                self.get_logger().info('Cubo encontrado durante el giro -> parqueo.')
+                return
             if time.time() < self.spin_end:
                 t = Twist(); t.angular.z = float(self.w_spin); self.cmd_pub.publish(t)
             else:
                 self.cmd_pub.publish(Twist())
                 self.spinning = False
-                self.spin_pub.publish(Bool(data=False))
-                # si giramos buscando en el checkpoint y ya lo vemos, aproximacion final
-                if self.search_at_checkpoint and self.phase == 'VOLVIENDO' and self._aruco_visible():
-                    self.phase = 'APROX_FINAL'
-                    self.spin_pub.publish(Bool(data=True))
+                if searching:
+                    self.search_at_checkpoint = False   # MEC_APPROACH reintenta/rinde (mantiene el gate)
+                else:
+                    self.spin_pub.publish(Bool(data=False))   # giro de exploracion -> devolver control
+            return
+
+        # ---- ACERCAMIENTO MECANUM al punto exacto (sin lookahead) + buscar ----
+        if self.phase == 'MEC_APPROACH':
+            if self._aruco_visible():
+                self.vs_w_i = self.vs_strafe_i = self.vs_v_i = 0.0
+                self.phase = 'APROX_FINAL'
+                return
+            pose = self._robot_pose()
+            if pose is None:
+                return
+            rx, ry, rth = pose
+            ex = self.return_goal[0] - rx
+            ey = self.return_goal[1] - ry
+            dist = math.hypot(ex, ey)
+            if dist >= self.mec_tol:
+                # mecanum: llevar el CENTRO al punto (vx adelante, vy strafe), sin lookahead
+                fx =  ex * math.cos(rth) + ey * math.sin(rth)   # adelante (robot)
+                fy = -ex * math.sin(rth) + ey * math.cos(rth)   # izquierda (robot)
+                cmd = Twist()
+                cmd.linear.x = max(-self.mec_v, min(self.mec_v, self.mec_k * fx))
+                cmd.linear.y = max(-self.mec_v, min(self.mec_v, self.mec_k * fy))
+                self.cmd_pub.publish(cmd)
+                self.get_logger().info(f'Mecanum -> punto exacto: dist={dist:.2f} m', throttle_duration_sec=1.0)
+            else:
+                # en el punto -> girar a buscar el cubo (con reintentos)
+                self.cmd_pub.publish(Twist())
+                if self.search_attempts < self.max_search:
+                    self.search_attempts += 1
+                    self.search_at_checkpoint = True
+                    self._start_stepped_search(f'buscar-en-punto {self.search_attempts}/{self.max_search}')
+                else:
+                    self.get_logger().warn('No reencontre el cubo tras varios giros. Guardo y termino.')
+                    self._finish(found=False)
             return
 
         if self.phase != 'APROX_FINAL':
             return
 
-        if not self._aruco_visible():
-            t = Twist(); t.angular.z = 0.4; self.cmd_pub.publish(t)   # re-buscar
+        # ---- PARQUEO MECANUM: 3 ejes simultaneos (servo visual + lidar A1) ----
+        if not self._aruco_visible() or self.marker_cx is None:
+            t = Twist(); t.angular.z = self.steer_sign * self.search_w   # re-buscar girando LENTO
+            self.cmd_pub.publish(t)
             return
-        ang_err = (self.aruco_u - self.K[0, 2]) / max(self.K[0, 2], 1.0)
-        dist_err = self.aruco_dist - self.stop_distance
-        if abs(dist_err) < self.app_dist_tol and abs(ang_err) < self.app_center_tol:
+        dt = 0.066
+        cmd = Twist()
+        # 1) GIRO: centrar el marcador en la imagen (P+I)
+        err_x = (self.img_w / 2.0) - self.marker_cx
+        self.vs_w_i = max(-100.0, min(100.0, self.vs_w_i + err_x * dt))
+        w = self.steer_sign * (self.kp_w * err_x + self.ki_w * self.vs_w_i)
+        cmd.angular.z = max(-self.w_max, min(self.w_max, w))
+        # 2) STRAFE (mecanum): perpendicularidad por marker_asymmetry
+        asym = self.marker_asymmetry if self.marker_asymmetry is not None else 0.0
+        self.vs_strafe_i = max(-1.0, min(1.0, self.vs_strafe_i + asym * dt))
+        strafe = self.kp_strafe * asym + self.ki_strafe * self.vs_strafe_i
+        cmd.linear.y = self.strafe_sign * max(-self.vy_max, min(self.vy_max, strafe))
+        # 3) AVANCE: distancia al cubo con el lidar de ABAJO (/scan_low)
+        if self.low_front_dist is None:
+            cmd.linear.x = 0.0
+            self.cmd_pub.publish(cmd)
+            self.get_logger().info('Esperando /scan_low (A1) para el avance...', throttle_duration_sec=3.0)
+            return
+        dist_err = self.low_front_dist - self.park_distance
+        self.vs_v_i = max(-0.5, min(0.5, self.vs_v_i + dist_err * dt))
+        v = self.kp_v * dist_err + self.ki_v * self.vs_v_i
+        # solo avanzar si esta razonablemente centrado y perpendicular (centra primero)
+        if abs(dist_err) > 0.05 and abs(err_x) < 50 and abs(asym) < 0.20:
+            cmd.linear.x = max(-0.12, min(0.12, v))
+        else:
+            cmd.linear.x = 0.0
+        # PARO: distancia(lidar) ok + marcador MUY centrado + asimetria minima
+        if abs(dist_err) < 0.05 and abs(err_x) < 15 and abs(asym) < 0.05:
+            self.cmd_pub.publish(Twist())
             self._finish(found=True)
             return
-        w = max(-self.w_max, min(self.w_max, self.steer_sign * self.k_ang * ang_err))
-        v = max(-self.v_max, min(self.v_max, self.k_lin * dist_err))
-        if abs(ang_err) > 0.20:
-            v *= 0.25
-        cmd = Twist(); cmd.linear.x = float(v); cmd.angular.z = float(w)
         self.cmd_pub.publish(cmd)
         self.get_logger().info(
-            f'Aprox final: dist={self.aruco_dist:.2f}m centro={ang_err:+.2f}',
+            f'Parqueo: dist_low={self.low_front_dist:.2f}m centro={err_x:+.0f}px asim={asym:+.2f} '
+            f'[v={cmd.linear.x:+.2f} vy={cmd.linear.y:+.2f} w={cmd.angular.z:+.2f}]',
             throttle_duration_sec=1.0)
 
     def _finish(self, found):
@@ -408,6 +571,17 @@ class MisionExplorarAruco(Node):
         self.spin_end = time.time() + self.spin_seconds
         self.spin_pub.publish(Bool(data=True))
         self.get_logger().info(f'Escaneo 360 ({motivo})...')
+
+    def _start_stepped_search(self, motivo):
+        """Barrido LENTO escalonado: empieza PARADO mirando, luego pasito a pasito."""
+        self.searching_stepped = True
+        self.search_substate = 'pause'
+        self.search_substate_end = time.time() + self.search_pause_s
+        self.search_steps_done = 0
+        self.spin_pub.publish(Bool(data=True))   # control diferencial cede /cmd_vel
+        self.get_logger().info(
+            f'Barrido lento ({motivo}): {self.search_total_steps} pasos de '
+            f'{self.search_step_deg:.0f} grados a {self.search_w:.2f} rad/s.')
 
     def _pick_frontier(self, rxy):
         m = self.map_msg
